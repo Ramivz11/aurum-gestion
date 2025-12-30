@@ -7,35 +7,46 @@ import time
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Aurum Suplementos", page_icon="💪", layout="wide")
 
-# --- CONEXIÓN HÍBRIDA (PC Y NUBE) ---
+# --- CONEXIÓN HÍBRIDA (ROBUSTA) ---
 @st.cache_resource
 def conectar_google_sheets():
-    gc = None # Variable vacía para empezar
+    # 👇👇 TU ID DEL EXCEL 👇👇
+    sheet_id = "10VhKuyPQVvqxux4_tQ_ZeoXrqED0VWSEXEytPVMBuW8"
     
-    # 1. PRIMER INTENTO: Buscar en la "Caja Fuerte" (Para cuando está en la Nube)
+    gc = None
+    
+    # 1. PRIMER INTENTO: Buscar archivo local (Tu PC)
     try:
-        # Ponemos esto en un try para que si falla en tu PC, no rompa el programa
-        if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            if "private_key" in creds_dict:
-                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            gc = gspread.service_account_from_dict(creds_dict)
-    except Exception:
-        pass # Si falla (porque estamos en PC), no hacemos nada y seguimos al paso 2
+        gc = gspread.service_account(filename='credenciales.json')
+    except FileNotFoundError:
+        # Si no encuentra el archivo, no pasa nada, seguimos al paso 2
+        pass
 
-    # 2. SEGUNDO INTENTO: Buscar el archivo local (Para tu PC)
+    # 2. SEGUNDO INTENTO: Buscar en la Nube (Secrets)
     if gc is None:
         try:
-            gc = gspread.service_account(filename='credenciales.json')
-        except FileNotFoundError:
-            st.error("⚠️ ERROR CRÍTICO: No encuentro la llave.")
-            st.info("Si estás en PC: Revisa que 'credenciales.json' esté en la carpeta.")
-            st.info("Si estás en la Nube: Revisa los 'Secrets' en la configuración.")
-            st.stop()
+            # Solo intentamos acceder a secrets si no encontramos el archivo local
+            # Así evitamos el error en tu PC
+            if "gcp_service_account" in st.secrets:
+                creds_dict = dict(st.secrets["gcp_service_account"])
+                
+                # Arreglo de saltos de línea para la clave privada
+                if "private_key" in creds_dict:
+                    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+                
+                gc = gspread.service_account_from_dict(creds_dict)
+        except Exception as e:
+            # Si falla esto también, capturamos el error pero no rompemos todo inmediatamente
+            pass
 
-    # 👇👇 TU ID DEL EXCEL 👇👇
-    sheet_id = "10VhKuyPQVvqxux4_tQ_ZeoXrqED0VWSEXEytPVMBuW8" 
+    # 3. VERIFICACIÓN FINAL
+    if gc is None:
+        st.error("⚠️ ERROR CRÍTICO: No se encontraron credenciales.")
+        st.info("PC: Verifica que 'credenciales.json' esté en la carpeta.")
+        st.info("Nube: Verifica que hayas cargado los 'Secrets'.")
+        st.stop()
     
+    # Si todo salió bien, abrimos la hoja
     sh = gc.open_by_key(sheet_id)
     return sh
 
@@ -246,6 +257,4 @@ try:
 
 except Exception as e:
     st.error("Ocurrió un error:")
-
     st.exception(e)
-

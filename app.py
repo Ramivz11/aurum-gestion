@@ -201,7 +201,7 @@ try:
         # MOSTRAR MÉTRICAS
         col1, col2, col3 = st.columns(3)
         col1.metric("💵 Caja Efectivo", f"${total_efvo:,.0f}")
-        col2.metric("🏦 Banco/App", f"${total_banco:,.0f}")
+        col2.metric("🏦 Mercado Pago", f"${total_banco:,.0f}")
         col3.metric("💰 Patrimonio Total", f"${gran_total:,.0f}", delta="Dinero + Mercadería (Precio Venta)")
         
         st.divider()

@@ -110,7 +110,8 @@ def registrar_venta_db(producto_nombre, cantidad, precio, metodo, ubicacion, not
         return False
 
 # --- INTERFAZ GRÁFICA ---
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2503/2503939.png", width=100)
+# En lugar de una dirección web, pones el nombre de tu archivo entre comillas
+st.sidebar.image("logo.png", width=150)
 st.sidebar.title("Aurum Gestión")
 menu = st.sidebar.radio("Navegación", ["Tablero Principal", "Registrar Venta", "Historial Ventas"])
 
@@ -245,4 +246,5 @@ try:
 
 except Exception as e:
     st.error("Ocurrió un error:")
+
     st.exception(e)

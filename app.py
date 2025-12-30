@@ -10,27 +10,27 @@ st.set_page_config(page_title="Aurum Suplementos", page_icon="💪", layout="wid
 # --- CONEXIÓN HÍBRIDA (PC Y NUBE) ---
 @st.cache_resource
 def conectar_google_sheets():
-    # 1. Intentamos buscar la llave en la "Caja Fuerte" de la Nube (Streamlit Secrets)
-    if "gcp_service_account" in st.secrets:
-        try:
-            # Convertimos el objeto de secretos a un diccionario normal de Python
+    gc = None # Variable vacía para empezar
+    
+    # 1. PRIMER INTENTO: Buscar en la "Caja Fuerte" (Para cuando está en la Nube)
+    try:
+        # Ponemos esto en un try para que si falla en tu PC, no rompa el programa
+        if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
-            
-            # Limpieza: A veces Streamlit convierte las claves privadas con \\n en vez de \n
             if "private_key" in creds_dict:
                 creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            
             gc = gspread.service_account_from_dict(creds_dict)
-        except Exception as e:
-            st.error(f"Error leyendo secretos: {e}")
-            st.stop()
-            
-    # 2. Si no estamos en la nube, buscamos el archivo local (Tu PC)
-    else:
+    except Exception:
+        pass # Si falla (porque estamos en PC), no hacemos nada y seguimos al paso 2
+
+    # 2. SEGUNDO INTENTO: Buscar el archivo local (Para tu PC)
+    if gc is None:
         try:
             gc = gspread.service_account(filename='credenciales.json')
         except FileNotFoundError:
-            st.error("⚠️ No se encontró 'credenciales.json' ni secretos en la nube.")
+            st.error("⚠️ ERROR CRÍTICO: No encuentro la llave.")
+            st.info("Si estás en PC: Revisa que 'credenciales.json' esté en la carpeta.")
+            st.info("Si estás en la Nube: Revisa los 'Secrets' en la configuración.")
             st.stop()
 
     # 👇👇 TU ID DEL EXCEL 👇👇
@@ -248,3 +248,4 @@ except Exception as e:
     st.error("Ocurrió un error:")
 
     st.exception(e)
+

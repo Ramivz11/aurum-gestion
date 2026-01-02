@@ -5,7 +5,41 @@ from datetime import datetime
 import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Aurum Suplementos", page_icon="💪", layout="wide")
+st.set_page_config(page_title="Aurum Suplementos", page_icon="logo.png", layout="wide")
+
+def check_password():
+    """Retorna True si el usuario ingresó la contraseña correcta."""
+
+    def password_entered():
+        """Verifica si la contraseña ingresada es correcta."""
+        if st.session_state["password"] == st.secrets["password"]:
+            st.session_state["password_correct"] = True
+            # Borrar la contraseña de la memoria de sesión por seguridad
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    # Si ya está validado, retornar True
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Mostrar input de contraseña
+    st.title("🔒 Acceso Restringido")
+    st.text_input(
+        "Ingresa la contraseña:", 
+        type="password", 
+        on_change=password_entered, 
+        key="password"
+    )
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("❌ Contraseña incorrecta")
+
+    return False
+
+if not check_password():
+    st.stop()  # Detiene la ejecución si no hay login exitoso
+
 
 # --- FUNCIONES AUXILIARES ---
 
@@ -234,7 +268,7 @@ def eliminar_venta(fila_idx, producto, cantidad, ubicacion):
 
 # --- INTERFAZ DE USUARIO ---
 
-st.sidebar.image("logo.png", width=150) # Asegúrate de tener logo.png o comenta esta línea
+st.sidebar.image("logo.png", width=850) # Asegúrate de tener logo.png o comenta esta línea
 st.sidebar.title("Aurum Gestión")
 menu = st.sidebar.radio("Navegación", ["Tablero Principal", "Registrar Venta", "Historial Ventas"])
 

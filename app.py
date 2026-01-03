@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
-import database as db  # <--- IMPORTAMOS NUESTRO NUEVO MÓDULO
+import database as db
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Aurum Suplementos", page_icon="logo.png", layout="wide")
@@ -10,8 +10,8 @@ st.sidebar.title("Aurum Gestión")
 
 menu = st.sidebar.radio("MENÚ", ["Registrar Venta", "Registrar Compra", "Movimientos", "Stock", "Finanzas"])
 
-# Carga inicial de datos usando el módulo nuevo
-df_prod, sucursales, df_ventas = db.obtener_datos_globales()
+# Carga inicial de datos (ahora recuperamos 4 variables)
+df_prod, sucursales, df_ventas, df_compras = db.obtener_datos_globales()
 
 # --- 1. REGISTRAR VENTA ---
 if menu == "Registrar Venta":
@@ -47,7 +47,6 @@ if menu == "Registrar Venta":
                     if stock_disp < cant:
                         st.error("❌ Stock insuficiente.")
                     else:
-                        # LLAMADA A DATABASE.PY
                         if db.registrar_venta(prod_sel, cant, precio, metodo, suc_sel, notas):
                             st.success("Venta registrada!")
                             time.sleep(1)
@@ -81,63 +80,107 @@ elif menu == "Registrar Compra":
 
 # --- 3. MOVIMIENTOS ---
 elif menu == "Movimientos":
-    st.title("📜 Historial")
+    st.title("📜 Historial de Transacciones")
+    
+    tipo_mov = st.radio("Ver:", ["Ventas", "Compras"], horizontal=True)
+    
     fc1, fc2 = st.columns(2)
     f_suc = fc1.selectbox("Filtrar Sucursal", ["Todas"] + sucursales)
     f_prod = fc2.selectbox("Filtrar Producto", ["Todos"] + (sorted(df_prod['Nombre'].unique().tolist()) if not df_prod.empty else []))
     
-    df_show = df_ventas.copy()
-    if f_suc != "Todas": df_show = df_show[df_show['UBICACION'] == f_suc]
-    if f_prod != "Todos": df_show = df_show[df_show['PRODUCTO'] == f_prod]
+    # Seleccionamos qué tabla usar
+    if tipo_mov == "Ventas":
+        df_show = df_ventas.copy()
+    else:
+        df_show = df_compras.copy()
+
+    # Aplicar filtros
+    if f_suc != "Todas" and not df_show.empty: 
+        df_show = df_show[df_show['UBICACION'] == f_suc]
+    if f_prod != "Todos" and not df_show.empty: 
+        df_show = df_show[df_show['PRODUCTO'] == f_prod]
     
     st.dataframe(df_show, use_container_width=True, hide_index=True)
     st.divider()
     
-    tab1, tab2 = st.tabs(["✏️ Editar", "🗑️ Eliminar"])
-    opciones = df_show.apply(lambda x: f"ID {x['ID']} | {x['PRODUCTO']} | {x['FECHA']}", axis=1).tolist()
+    # Pestañas para editar / eliminar
+    tab1, tab2 = st.tabs(["✏️ Editar Registro", "🗑️ Eliminar Registro"])
+    
+    # Generamos la lista de opciones para el selectbox
+    opciones = []
+    if not df_show.empty:
+        opciones = df_show.apply(lambda x: f"ID {x['ID']} | {x['PRODUCTO']} | {x['FECHA']}", axis=1).tolist()
     
     if opciones:
         with tab1:
-            sel_edit = st.selectbox("Editar venta:", opciones, key="s_edit")
+            sel_edit = st.selectbox(f"Editar {tipo_mov.lower()}:", opciones, key="s_edit")
             id_edit = int(sel_edit.split(" | ")[0].replace("ID ", ""))
-            row = df_ventas[df_ventas['ID'] == id_edit].iloc[0]
+            row = df_show[df_show['ID'] == id_edit].iloc[0]
             
             with st.form("f_edit"):
                 ne1, ne2 = st.columns(2)
-                np = ne1.selectbox("Producto", df_prod['Nombre'].unique(), index=list(df_prod['Nombre'].unique()).index(row['PRODUCTO']))
-                ns = ne2.selectbox("Sucursal", sucursales, index=sucursales.index(row['UBICACION']))
+                # Producto y Sucursal
+                idx_p = list(df_prod['Nombre'].unique()).index(row['PRODUCTO']) if row['PRODUCTO'] in df_prod['Nombre'].unique() else 0
+                idx_s = sucursales.index(row['UBICACION']) if row['UBICACION'] in sucursales else 0
+                
+                np = ne1.selectbox("Producto", df_prod['Nombre'].unique(), index=idx_p)
+                ns = ne2.selectbox("Sucursal", sucursales, index=idx_s)
+                
                 nc = st.number_input("Cantidad", value=int(row['CANTIDAD']))
-                npr = st.number_input("Precio", value=float(row['PRECIO UNITARIO']))
+                
+                # Campos diferentes según venta o compra
+                if tipo_mov == "Ventas":
+                    n_money = st.number_input("Precio Unitario", value=float(row['PRECIO UNITARIO']))
+                    n_prov = ""
+                else:
+                    n_money = st.number_input("Costo Total", value=float(row['COSTO']))
+                    n_prov = st.text_input("Proveedor", value=str(row['PROVEEDOR']))
+                
                 nm = st.selectbox("Pago", ["Efectivo", "Transferencia"], index=["Efectivo", "Transferencia"].index(row['METODO PAGO']))
                 nn = st.text_input("Notas", value=str(row['NOTAS']))
                 
                 if st.form_submit_button("Guardar Cambios"):
-                    d_new = {'producto': np, 'cantidad': nc, 'precio': npr, 'ubicacion': ns, 'metodo': nm, 'notas': nn}
-                    if db.editar_venta(id_edit, row, d_new):
-                        st.success("Editado correctamente")
-                        time.sleep(1)
-                        st.rerun()
+                    if tipo_mov == "Ventas":
+                        d_new = {'producto': np, 'cantidad': nc, 'precio': n_money, 'ubicacion': ns, 'metodo': nm, 'notas': nn}
+                        if db.editar_venta(id_edit, row, d_new):
+                            st.success("Venta editada correctamente")
+                            time.sleep(1)
+                            st.rerun()
+                    else:
+                        # Para compras
+                        d_new = {'producto': np, 'cantidad': nc, 'costo': n_money, 'proveedor': n_prov, 'ubicacion': ns, 'metodo': nm, 'notas': nn}
+                        if db.editar_compra(id_edit, row, d_new):
+                            st.success("Compra editada correctamente (Stock y Caja ajustados)")
+                            time.sleep(1)
+                            st.rerun()
 
         with tab2:
-            sel_del = st.selectbox("Eliminar venta:", opciones, key="s_del")
+            sel_del = st.selectbox(f"Eliminar {tipo_mov.lower()}:", opciones, key="s_del")
             id_del = int(sel_del.split(" | ")[0].replace("ID ", ""))
+            
+            st.warning(f"⚠️ Al eliminar, se revertirá el stock y el dinero automáticamente.")
             if st.button("🗑️ ELIMINAR DEFINITIVAMENTE", type="primary"):
-                row_del = df_ventas[df_ventas['ID'] == id_del].iloc[0]
-                if db.eliminar_venta(id_del, row_del):
-                    st.success("Eliminado y stock restaurado")
-                    time.sleep(1)
-                    st.rerun()
+                row_del = df_show[df_show['ID'] == id_del].iloc[0]
+                
+                if tipo_mov == "Ventas":
+                    if db.eliminar_venta(id_del, row_del):
+                        st.success("Venta eliminada")
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    if db.eliminar_compra(id_del, row_del):
+                        st.success("Compra eliminada (Stock descontado)")
+                        time.sleep(1)
+                        st.rerun()
+    else:
+        st.info("No hay registros para mostrar con los filtros actuales.")
 
 # --- 4. STOCK ---
-# --- 4. STOCK Y PRODUCTOS ---
 elif menu == "Stock":
     st.title("📦 Gestión de Productos e Inventario")
-    
-    # Creamos pestañas
     tab1, tab2 = st.tabs(["📊 Ver Inventario", "➕ Nuevo Producto"])
     
     with tab1:
-        # Mostramos la tabla tal cual estaba
         st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
     with tab2:
@@ -148,21 +191,19 @@ elif menu == "Stock":
             costo_nuevo = c1.number_input("Costo", min_value=0.0, step=100.0)
             precio_nuevo = c2.number_input("Precio Venta", min_value=0.0, step=100.0)
             
-            submitted = st.form_submit_button("Guardar Producto")
-            if submitted:
+            if st.form_submit_button("Guardar Producto"):
                 if not nombre_nuevo:
                     st.error("El nombre no puede estar vacío.")
                 else:
-                    # Llamamos a la función que acabamos de poner en database.py
                     if db.crear_producto(nombre_nuevo, costo_nuevo, precio_nuevo):
                         st.success(f"¡Producto '{nombre_nuevo}' creado!")
                         time.sleep(1)
                         st.rerun()
+
 # --- 5. FINANZAS ---
 elif menu == "Finanzas":
     st.title("💰 Finanzas y Patrimonio")
     
-    # Obtenemos datos crudos desde database.py
     df_v, df_c, df_saldos = db.obtener_resumen_finanzas()
     
     def get_val(df, metodo):
@@ -197,7 +238,6 @@ elif menu == "Finanzas":
             real_tr = c2.number_input("Banco Real", value=sis_tr, step=100.0)
             
             if st.form_submit_button("Calibrar"):
-                # Ajuste inverso: NuevoBase = Real - Ventas + Compras
                 n_base_ef = real_ef - v_ef + c_ef
                 n_base_tr = real_tr - v_tr + c_tr
                 
@@ -207,8 +247,7 @@ elif menu == "Finanzas":
                 time.sleep(1)
                 st.rerun()
 
-    # Totales Finales (re-calculados con base fresca)
-    final_ef = sis_ef # (Ya calculado arriba con la base leída)
+    final_ef = sis_ef 
     final_tr = sis_tr 
 
     # Valor Stock

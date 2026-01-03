@@ -1,3 +1,4 @@
 streamlit
 pandas
-gspread
+mysql-connector-python
+    

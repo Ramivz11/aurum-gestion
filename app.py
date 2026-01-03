@@ -86,6 +86,44 @@ def registrar_venta_db(producto, cantidad, precio, metodo, ubicacion, notas):
     finally:
         cursor.close()
         conn.close()
+        
+
+
+def registrar_compra_db(producto, cantidad, costo, proveedor, ubicacion, notas):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # 1. Aumentar Stock (Si el producto no existe en esa sucursal, lo crea)
+        # Primero intentamos actualizar
+        cursor.execute("""
+            UPDATE inventario 
+            SET cantidad = cantidad + %s 
+            WHERE producto_nombre = %s AND sucursal_nombre = %s
+        """, (cantidad, producto, ubicacion))
+        
+        # Si no se actualizó ninguna fila (rowcount=0), es porque no existía en esa sucursal -> Insertamos
+        if cursor.rowcount == 0:
+            cursor.execute("""
+                INSERT INTO inventario (producto_nombre, sucursal_nombre, cantidad)
+                VALUES (%s, %s, %s)
+            """, (producto, ubicacion, cantidad))
+
+        # 2. Registrar la Compra (Salida de dinero / Gasto)
+        fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("""
+            INSERT INTO compras (fecha, producto, cantidad, costo_total, proveedor, ubicacion, notas)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (fecha, producto, cantidad, costo, proveedor, ubicacion, notas))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        st.error(f"❌ Error SQL al registrar compra: {e}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
 
 def editar_venta_db(id_venta, datos_old, datos_new):
     conn = get_db_connection()
@@ -155,8 +193,7 @@ def eliminar_venta_db(id_venta, datos_venta):
 # --- INTERFAZ ---
 st.sidebar.image("logo.png", width=200) # Comenta si no tienes la imagen
 st.sidebar.title("Aurum Gestión ")
-menu = st.sidebar.radio("Navegación", ["Registrar Venta", "Movimientos", "Stock"])
-
+menu = st.sidebar.radio("Navegación", ["Registrar Venta", "Registrar Compra", "Movimientos", "Stock"])
 # Carga inicial de datos
 df_prod, sucursales, df_ventas = obtener_datos()
 
@@ -176,7 +213,15 @@ if menu == "Registrar Venta":
             
             m1, m2 = st.columns(2)
             m1.metric("Precio Lista", f"${precio_sug:,.0f}")
-            m2.metric(f"Stock {suc_sel}", f"{stock_disp} u.")
+            
+            # --- MODIFICACIÓN PARA ALERTA VISUAL ---
+            if stock_disp > 0:
+                # Si hay stock, se muestra verde o normal
+                m2.metric(f"Stock {suc_sel}", f"{stock_disp} u.", delta="Disponible")
+            else:
+                # Si NO hay stock, muestra la cruz y el texto en rojo (gracias a delta_color="inverse")
+                m2.metric(f"Stock {suc_sel}", "❌ AGOTADO", delta="- Sin Stock", delta_color="inverse")
+            # ---------------------------------------
             
             with st.form("venta_form"):
                 col_f1, col_f2 = st.columns(2)
@@ -193,6 +238,32 @@ if menu == "Registrar Venta":
                             st.success("Venta registrada!")
                             time.sleep(1)
                             st.rerun()
+elif menu == "Registrar Compra":
+    st.title("📦 Ingreso de Mercadería (Compras)")
+
+    if not sucursales:
+        st.warning("Carga sucursales primero.")
+    else:
+        c1, c2 = st.columns(2)
+        # Nota: Aquí usamos los productos ya definidos. Si es uno NUEVO de nombre, 
+        # idealmente deberías agregarlo a la tabla 'productos' primero.
+        prod_compra = c1.selectbox("Producto a reponer", sorted(df_prod['Nombre'].unique()) if not df_prod.empty else [])
+        suc_compra = c2.selectbox("Destino (Sucursal)", sucursales)
+
+        with st.form("compra_form"):
+            col_c1, col_c2 = st.columns(2)
+            cant_compra = col_c1.number_input("Cantidad Comprada", min_value=1, value=10)
+            costo_total = col_c2.number_input("Costo Total de la Compra ($)", min_value=0.0, step=100.0)
+
+            col_c3, col_c4 = st.columns(2)
+            proveedor = col_c3.text_input("Proveedor (Opcional)")
+            notas_compra = col_c4.text_input("Notas / Nro Factura")
+
+            if st.form_submit_button("📥 REGISTRAR INGRESO", type="primary", use_container_width=True):
+                if registrar_compra_db(prod_compra, cant_compra, costo_total, proveedor, suc_compra, notas_compra):
+                    st.success(f"✅ ¡Ingreso registrado! Se sumaron {cant_compra} u. a {suc_compra}")
+                    time.sleep(1.5)
+                    st.rerun()
 
 elif menu == "Movimientos":
     st.title("📜 Historial de Ventas")

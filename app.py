@@ -193,8 +193,7 @@ def eliminar_venta_db(id_venta, datos_venta):
 # --- INTERFAZ ---
 st.sidebar.image("logo.png", width=200) # Comenta si no tienes la imagen
 st.sidebar.title("Aurum Gestión ")
-menu = st.sidebar.radio("Navegación", ["Registrar Venta", "Registrar Compra", "Movimientos", "Stock"])
-# Carga inicial de datos
+menu = st.sidebar.radio("Navegación", ["Registrar Venta", "Registrar Compra", "Movimientos", "Stock", "Finanzas"])# Carga inicial de datos
 df_prod, sucursales, df_ventas = obtener_datos()
 
 if menu == "Registrar Venta":
@@ -353,3 +352,125 @@ elif menu == "Movimientos":
 elif menu == "Stock":
     st.title("📦 Inventario Global")
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
+
+elif menu == "Finanzas":
+    st.title("Tablero de finanzas 💰")
+    
+    conn = get_db_connection()
+    
+    # --- 1. PRIMERO CALCULAMOS EL FLUJO (Ventas y Compras) ---
+    # Necesitamos estos datos ANTES del formulario para poder hacer el ajuste matemático
+    
+    # A. Ingresos por Ventas
+    df_v_totales = pd.read_sql("SELECT metodo_pago, SUM(total) as total FROM ventas GROUP BY metodo_pago", conn)
+    def get_val(df, metodo):
+        if df.empty: return 0.0
+        val = df.loc[df['metodo_pago'] == metodo, 'total']
+        return float(val.iloc[0]) if not val.empty else 0.0
+
+    ventas_efectivo = get_val(df_v_totales, 'Efectivo')
+    ventas_banco = get_val(df_v_totales, 'Transferencia')
+    
+    # B. Egresos por Compras
+    try:
+        df_c_totales = pd.read_sql("SELECT metodo_pago, SUM(costo_total) as total FROM compras GROUP BY metodo_pago", conn)
+        compras_efectivo = get_val(df_c_totales, 'Efectivo')
+        compras_banco = get_val(df_c_totales, 'Transferencia')
+    except:
+        compras_efectivo = 0.0
+        compras_banco = 0.0
+        
+    # --- 2. GESTIÓN DE SALDOS (CALIBRACIÓN) ---
+    with st.expander("⚙️ Calibrar Caja (Ajuste de Saldo Real)"):
+        st.info("Ingresa el dinero que tienes **HOY REALMENTE** en tu poder. El sistema calculará el ajuste matemático automáticamente.")
+        
+        # Leemos el saldo inicial guardado solo para referencia interna
+        df_saldos = pd.read_sql("SELECT cuenta, monto FROM saldos_iniciales", conn)
+        base_efectivo = 0.0
+        base_banco = 0.0
+        if not df_saldos.empty:
+            r_ef = df_saldos[df_saldos['cuenta'] == 'Efectivo']
+            r_tr = df_saldos[df_saldos['cuenta'] == 'Transferencia']
+            if not r_ef.empty: base_efectivo = float(r_ef.iloc[0]['monto'])
+            if not r_tr.empty: base_banco = float(r_tr.iloc[0]['monto'])
+            
+        # Calculamos cuánto cree el sistema que tienes ahora, para ponerlo como valor por defecto
+        sistema_efectivo = base_efectivo + ventas_efectivo - compras_efectivo
+        sistema_banco = base_banco + ventas_banco - compras_banco
+        
+        with st.form("form_saldos_reales"):
+            c_ini1, c_ini2 = st.columns(2)
+            # El usuario edita lo que QUIERE ver (su realidad)
+            real_efectivo = c_ini1.number_input("Efectivo", value=sistema_efectivo, step=100.0)
+            real_banco = c_ini2.number_input("Transferencia", value=sistema_banco, step=100.0)
+            
+            if st.form_submit_button("✅ Calibrar Saldos"):
+                # FÓRMULA MÁGICA:
+                # Si Saldo_Real = Inicial + Ventas - Compras
+                # Entonces: Inicial = Saldo_Real - Ventas + Compras
+                
+                nuevo_base_efectivo = real_efectivo - ventas_efectivo + compras_efectivo
+                nuevo_base_banco = real_banco - ventas_banco + compras_banco
+                
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("UPDATE saldos_iniciales SET monto=%s WHERE cuenta='Efectivo'", (nuevo_base_efectivo,))
+                    cursor.execute("UPDATE saldos_iniciales SET monto=%s WHERE cuenta='Transferencia'", (nuevo_base_banco,))
+                    conn.commit()
+                    st.success(f"¡Caja calibrada! Ajustado a: ${real_efectivo:,.0f} y ${real_banco:,.0f}")
+                    time.sleep(1.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                finally:
+                    cursor.close()
+    
+    # --- 3. CÁLCULO FINAL PARA MOSTRAR ---
+    # Volvemos a leer la base (que ahora ya tiene el ajuste correcto)
+    df_saldos_final = pd.read_sql("SELECT cuenta, monto FROM saldos_iniciales", conn)
+    final_base_ef = 0.0
+    final_base_tr = 0.0
+    
+    if not df_saldos_final.empty:
+        r_ef = df_saldos_final[df_saldos_final['cuenta'] == 'Efectivo']
+        r_tr = df_saldos_final[df_saldos_final['cuenta'] == 'Transferencia']
+        if not r_ef.empty: final_base_ef = float(r_ef.iloc[0]['monto'])
+        if not r_tr.empty: final_base_tr = float(r_tr.iloc[0]['monto'])
+
+    # Ahora sí, esta cuenta dará EXACTAMENTE lo que pusiste en el formulario
+    caja_efectivo_real = final_base_ef + ventas_efectivo - compras_efectivo
+    caja_banco_real = final_base_tr + ventas_banco - compras_banco
+    
+    # 4. Valor de Mercadería
+    cols_stock = [c for c in df_prod.columns if c.startswith('Stock_')]
+    if cols_stock and not df_prod.empty:
+        df_prod['Stock_Total_U'] = df_prod[cols_stock].sum(axis=1)
+        valor_venta_total = (df_prod['Stock_Total_U'] * df_prod['Precio']).sum()
+        valor_costo_total = (df_prod['Stock_Total_U'] * df_prod['Costo']).sum()
+    else:
+        valor_venta_total = 0
+        valor_costo_total = 0
+
+    patrimonio_total = caja_efectivo_real + caja_banco_real + valor_venta_total
+    
+    conn.close()
+
+    # --- D. VISUALIZACIÓN ---
+    st.markdown("### 💵 Disponibilidad Real")
+    col1, col2, col3 = st.columns(3)
+    
+    col1.metric("Caja Efectivo", f"${caja_efectivo_real:,.0f}", delta="Disponible hoy")            
+    col2.metric("Mercado Pago", f"${caja_banco_real:,.0f}", delta="Disponible hoy")
+    col3.metric("Total Líquido", f"${(caja_efectivo_real + caja_banco_real):,.0f}", help="Suma de Efectivo y Banco")
+    
+    st.divider()
+    
+    st.markdown("### 📦 Valor de Stock")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Costo Invertido", f"${valor_costo_total:,.0f}")
+    m2.metric("Valor de Venta", f"${valor_venta_total:,.0f}")
+    m3.metric("Ganancia Potencial", f"${(valor_venta_total - valor_costo_total):,.0f}", delta="Margen")
+    
+    st.divider()
+    st.subheader("💎 Patrimonio Total")
+    st.info(f"Capital Total (Dinero + Mercadería): **${patrimonio_total:,.0f}**")

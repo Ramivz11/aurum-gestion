@@ -8,7 +8,7 @@ st.set_page_config(page_title="Aurum Suplementos", page_icon="logo.png", layout=
 st.sidebar.image("logo.png", width=200)
 st.sidebar.title("Aurum Gestión")
 
-menu = st.sidebar.radio("Navegación", ["Registrar Venta", "Registrar Compra", "Movimientos", "Stock", "Finanzas"])
+menu = st.sidebar.radio("MENÚ", ["Registrar Venta", "Registrar Compra", "Movimientos", "Stock", "Finanzas"])
 
 # Carga inicial de datos usando el módulo nuevo
 df_prod, sucursales, df_ventas = db.obtener_datos_globales()
@@ -129,10 +129,35 @@ elif menu == "Movimientos":
                     st.rerun()
 
 # --- 4. STOCK ---
+# --- 4. STOCK Y PRODUCTOS ---
 elif menu == "Stock":
-    st.title("📦 Inventario Global")
-    st.dataframe(df_prod, use_container_width=True, hide_index=True)
+    st.title("📦 Gestión de Productos e Inventario")
+    
+    # Creamos pestañas
+    tab1, tab2 = st.tabs(["📊 Ver Inventario", "➕ Nuevo Producto"])
+    
+    with tab1:
+        # Mostramos la tabla tal cual estaba
+        st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
+    with tab2:
+        st.subheader("Dar de alta nuevo producto")
+        with st.form("alta_producto"):
+            nombre_nuevo = st.text_input("Nombre del Producto").upper()
+            c1, c2 = st.columns(2)
+            costo_nuevo = c1.number_input("Costo", min_value=0.0, step=100.0)
+            precio_nuevo = c2.number_input("Precio Venta", min_value=0.0, step=100.0)
+            
+            submitted = st.form_submit_button("Guardar Producto")
+            if submitted:
+                if not nombre_nuevo:
+                    st.error("El nombre no puede estar vacío.")
+                else:
+                    # Llamamos a la función que acabamos de poner en database.py
+                    if db.crear_producto(nombre_nuevo, costo_nuevo, precio_nuevo):
+                        st.success(f"¡Producto '{nombre_nuevo}' creado!")
+                        time.sleep(1)
+                        st.rerun()
 # --- 5. FINANZAS ---
 elif menu == "Finanzas":
     st.title("💰 Finanzas y Patrimonio")

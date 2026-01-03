@@ -1,37 +1,33 @@
 # Sistema de Gestión - Aurum Suplementos
 
-Aplicación web desarrollada en Python para el control de stock, registro de ventas y seguimiento financiero. Utiliza Google Sheets como backend para permitir la sincronización de datos en tiempo real y facilitar la administración manual.
+Aplicación web desarrollada en Python para el control de stock, registro de ventas y gestión de inventario. Utiliza **MySQL** como base de datos relacional para garantizar la integridad y escalabilidad de los datos, reemplazando el antiguo sistema basado en hojas de cálculo.
 
-## Funcionalidades Principales
+## 🚀 Funcionalidades Principales
 
-- **Tablero de Control:** Visualización en tiempo real de caja (efectivo y bancos), patrimonio total y valuación de mercadería.
-- **Control de Inventario:** Descuento automático de stock por sucursal al confirmar ventas.
-- **Registro de Ventas:** Interfaz simplificada para carga rápida de transacciones.
-- **Soporte Multi-sucursal:** Gestión de stock dividido por ubicaciones físicas.
-- **Limpieza de Datos:** Procesamiento automático de formatos de moneda para evitar errores de cálculo.
+- **Gestión de Stock Centralizada:** Vista global de productos con sus costos y precios actualizados.
+- **Registro de Ventas:** Interfaz optimizada para registrar salidas de mercancía, calculando totales y validando stock disponible en tiempo real.
+- **Control de Movimientos:**
+  - Historial completo de ventas con filtros por Sucursal y Producto.
+  - **Edición de Ventas:** Permite modificar transacciones pasadas, ajustando automáticamente el stock (revierte la operación anterior y aplica la nueva).
+  - **Eliminación de Ventas:** Borrado lógico de ventas con devolución automática de los productos al inventario.
+- **Soporte Multi-sucursal:** Control de inventario dividido por ubicaciones físicas (gestionado vía base de datos).
 
-## Stack Tecnológico
+## 🛠️ Stack Tecnológico
 
-- Python 3.x
-- Streamlit (Interfaz de usuario)
-- Pandas (Procesamiento de datos)
-- Google Sheets API (gspread)
+- **Lenguaje:** Python 3.11+
+- **Interfaz:** [Streamlit](https://streamlit.io/)
+- **Base de Datos:** MySQL
+- **Librerías Clave:**
+  - `pandas` (Manipulación de datos)
+  - `mysql-connector-python` (Conexión a BD)
 
-## Instalación y Uso
+## ⚙️ Instalación y Configuración
 
-1. Clonar el repositorio.
-2. Instalar las dependencias necesarias:
-   pip install -r requirements.txt
-3. Configuración de credenciales:
-   - El sistema requiere un archivo `credenciales.json` (Service Account de Google Cloud) en la raíz del proyecto para funcionar localmente.
-   - Para despliegue en la nube, las credenciales se configuran mediante variables de entorno (Secrets).
-4. Ejecutar la aplicación:
-   streamlit run app.py
+### 1. Prerrequisitos
+- Tener instalado Python.
+- Tener un servidor MySQL corriendo (local o remoto).
 
-## Estructura de Datos
-
-El sistema espera un archivo de Google Sheets con las siguientes hojas:
-- **Productos:** Debe contener columnas de `Costo`, `Precio` y columnas de stock con el prefijo `Stock_` seguido del nombre de la sucursal.
-- **Sucursales:** Lista de ubicaciones habilitadas.
-- **Ventas:** Historial de transacciones.
-- **Caja:** Saldos iniciales de efectivo y banco.
+### 2. Clonar el repositorio
+```bash
+git clone <URL_DEL_REPOSITORIO>
+cd aurum-gestion

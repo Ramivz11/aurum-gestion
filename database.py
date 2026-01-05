@@ -87,6 +87,43 @@ def crear_producto(nombre, costo, precio):
     finally:
         cursor.close()
         conn.close()
+        # --- EN database.py ---
+
+def actualizar_producto(nombre_anterior, nuevo_nombre, nuevo_costo, nuevo_precio):
+    conn = get_db_connection()
+    cursor = conn.cursor(buffered=True)
+    try:
+        cursor.execute("SET SQL_SAFE_UPDATES = 0;")
+        
+        # 1. Validar si el nuevo nombre ya existe (si es que estamos cambiándolo)
+        if nuevo_nombre != nombre_anterior:
+            cursor.execute("SELECT id FROM productos WHERE nombre = %s", (nuevo_nombre,))
+            if cursor.fetchone():
+                st.warning(f"⚠️ El nombre '{nuevo_nombre}' ya está en uso por otro producto.")
+                return False
+
+        # 2. Actualizar tabla maestra de productos
+        sql_prod = "UPDATE productos SET nombre=%s, costo=%s, precio=%s WHERE nombre=%s"
+        cursor.execute(sql_prod, (nuevo_nombre, nuevo_costo, nuevo_precio, nombre_anterior))
+
+        # 3. Si el nombre cambió, actualizar referencias en las otras tablas
+        if nuevo_nombre != nombre_anterior:
+            # Actualizar inventario
+            cursor.execute("UPDATE inventario SET producto_nombre=%s WHERE producto_nombre=%s", (nuevo_nombre, nombre_anterior))
+            # Actualizar ventas históricas
+            cursor.execute("UPDATE ventas SET producto=%s WHERE producto=%s", (nuevo_nombre, nombre_anterior))
+            # Actualizar compras históricas
+            cursor.execute("UPDATE compras SET producto=%s WHERE producto=%s", (nuevo_nombre, nombre_anterior))
+
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        st.error(f"Error al actualizar producto: {e}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
 
 # --- 4. VENTAS ---
 def registrar_venta(producto, cantidad, precio, metodo, ubicacion, notas):

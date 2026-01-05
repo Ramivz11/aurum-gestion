@@ -176,9 +176,15 @@ elif menu == "Movimientos":
         st.info("No hay registros para mostrar con los filtros actuales.")
 
 # --- 4. STOCK ---
+# --- EN app.py ---
+
+# ... (código anterior) ...
+
+# --- 4. STOCK ---
 elif menu == "Stock":
     st.title("📦 Gestión de Productos e Inventario")
-    tab1, tab2 = st.tabs(["📊 Ver Inventario", "➕ Nuevo Producto"])
+    # Agregamos una pestaña más: "✏️ Editar Producto"
+    tab1, tab2, tab3 = st.tabs(["📊 Ver Inventario", "➕ Nuevo Producto", "✏️ Editar Producto"])
     
     with tab1:
         st.dataframe(df_prod, use_container_width=True, hide_index=True)
@@ -197,6 +203,33 @@ elif menu == "Stock":
                 else:
                     if db.crear_producto(nombre_nuevo, costo_nuevo, precio_nuevo):
                         st.success(f"¡Producto '{nombre_nuevo}' creado!")
+                        time.sleep(1)
+                        st.rerun()
+
+    with tab3:
+        st.subheader("Modificar producto existente")
+        if df_prod.empty:
+            st.info("No hay productos cargados.")
+        else:
+            lista_productos = sorted(df_prod['Nombre'].unique())
+            prod_a_editar = st.selectbox("Seleccionar Producto", lista_productos)
+            
+            # Obtener datos actuales del producto seleccionado
+            # Buscamos en df_prod la fila correspondiente
+            datos_actuales = df_prod[df_prod['Nombre'] == prod_a_editar].iloc[0]
+            
+            with st.form("editar_producto"):
+                # Usamos los valores actuales como default
+                new_name = st.text_input("Nombre", value=datos_actuales['Nombre'])
+                
+                col_e1, col_e2 = st.columns(2)
+                new_costo = col_e1.number_input("Costo", min_value=0.0, step=100.0, value=float(datos_actuales['Costo']))
+                new_precio = col_e2.number_input("Precio Venta", min_value=0.0, step=100.0, value=float(datos_actuales['Precio']))
+                
+                if st.form_submit_button("💾 Guardar Cambios"):
+                    # Llamamos a la nueva función en database.py
+                    if db.actualizar_producto(prod_a_editar, new_name, new_costo, new_precio):
+                        st.success(f"Producto '{new_name}' actualizado correctamente.")
                         time.sleep(1)
                         st.rerun()
 

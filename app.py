@@ -58,21 +58,79 @@ elif menu == "Registrar Compra":
     if not sucursales:
         st.warning("Carga sucursales primero.")
     else:
+        # --- FUNCIÓN DE ACTUALIZACIÓN AUTOMÁTICA ---
+        def actualizar_total():
+            # 1. Obtener valores desde el estado
+            p_sel = st.session_state.k_prod_compra
+            c_sel = st.session_state.k_cant_compra
+            
+            # 2. Buscar costo unitario
+            c_unitario = 0.0
+            if not df_prod.empty:
+                row = df_prod[df_prod['Nombre'] == p_sel]
+                if not row.empty:
+                    c_unitario = float(row.iloc[0]['Costo'])
+            
+            # 3. Calcular y escribir en el estado de "Costo Total"
+            st.session_state.k_costo_total = c_unitario * c_sel
+
+        # --- INTERFAZ ---
         c1, c2 = st.columns(2)
-        prod_compra = c1.selectbox("Producto", sorted(df_prod['Nombre'].unique()) if not df_prod.empty else [])
-        suc_compra = c2.selectbox("Destino", sucursales)
         
-        with st.form("compra_form"):
+        lista_prods = sorted(df_prod['Nombre'].unique()) if not df_prod.empty else []
+        
+        # Selectbox: Producto
+        prod_compra = c1.selectbox(
+            "Producto", 
+            lista_prods, 
+            key="k_prod_compra", 
+            on_change=actualizar_total
+        )
+        
+        suc_compra = c2.selectbox("Destino", sucursales)
+
+        # --- PREPARACIÓN DE VALORES INICIALES ---
+        # Si el usuario entra por primera vez y no existe 'k_costo_total' en memoria, lo calculamos.
+        if "k_costo_total" not in st.session_state:
+            costo_ini_unitario = 0.0
+            if prod_compra and not df_prod.empty:
+                row_ini = df_prod[df_prod['Nombre'] == prod_compra]
+                if not row_ini.empty:
+                    costo_ini_unitario = float(row_ini.iloc[0]['Costo'])
+            # Inicializamos en memoria (Cantidad 1 por defecto * Costo)
+            st.session_state.k_costo_total = costo_ini_unitario * 1.0
+
+        with st.container(): # Usamos container visual en lugar de form para orden
             cc1, cc2 = st.columns(2)
-            cant_c = cc1.number_input("Cantidad", min_value=1, value=10)
-            costo_c = cc2.number_input("Costo Total ($)", min_value=0.0, step=100.0)
+            
+            # Input: Cantidad
+            cant_c = cc1.number_input(
+                "Cantidad", 
+                min_value=1, 
+                value=1, 
+                key="k_cant_compra", 
+                on_change=actualizar_total
+            )
+            
+            # Input: Costo Total
+            # IMPORTANTE: No usamos 'value=' aquí para evitar el error.
+            # Streamlit tomará el valor directamente de st.session_state.k_costo_total
+            costo_c = cc2.number_input(
+                "Costo Total ($)", 
+                min_value=0.0, 
+                step=100.0, 
+                key="k_costo_total" 
+            )
             
             cc3, cc4 = st.columns(2)
             prov = cc3.text_input("Proveedor")
             metodo_c = cc4.selectbox("Método Pago", ["Efectivo", "Transferencia"])
+            
             notas_c = st.text_input("Notas / Factura")
             
-            if st.form_submit_button("📥 REGISTRAR INGRESO", type="primary"):
+            st.divider()
+            
+            if st.button("📥 REGISTRAR INGRESO", type="primary", use_container_width=True):
                 if db.registrar_compra(prod_compra, cant_c, costo_c, prov, metodo_c, suc_compra, notas_c):
                     st.success(f"Ingreso registrado en {suc_compra}!")
                     time.sleep(1.5)

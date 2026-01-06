@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import time
 import database as db
+from datetime import datetime
+from fpdf import FPDF
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Aurum Suplementos", page_icon="logo.png", layout="wide")
@@ -233,16 +235,16 @@ elif menu == "Movimientos":
     else:
         st.info("No hay registros para mostrar con los filtros actuales.")
 
-# --- 4. STOCK ---
-# --- EN app.py ---
+# --- EN app.py (Sección STOCK completa) ---
 
-# ... (código anterior) ...
+# ... (resto del código anterior) ...
 
 # --- 4. STOCK ---
 elif menu == "Stock":
     st.title("📦 Gestión de Productos e Inventario")
-    # Agregamos una pestaña más: "✏️ Editar Producto"
-    tab1, tab2, tab3 = st.tabs(["📊 Ver Inventario", "➕ Nuevo Producto", "✏️ Editar Producto"])
+    
+    # AHORA SON 4 PESTAÑAS
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Ver Inventario", "➕ Nuevo Producto", "✏️ Editar Producto", "📄 Reporte PDF"])
     
     with tab1:
         st.dataframe(df_prod, use_container_width=True, hide_index=True)
@@ -272,24 +274,95 @@ elif menu == "Stock":
             lista_productos = sorted(df_prod['Nombre'].unique())
             prod_a_editar = st.selectbox("Seleccionar Producto", lista_productos)
             
-            # Obtener datos actuales del producto seleccionado
-            # Buscamos en df_prod la fila correspondiente
             datos_actuales = df_prod[df_prod['Nombre'] == prod_a_editar].iloc[0]
             
             with st.form("editar_producto"):
-                # Usamos los valores actuales como default
                 new_name = st.text_input("Nombre", value=datos_actuales['Nombre'])
-                
                 col_e1, col_e2 = st.columns(2)
                 new_costo = col_e1.number_input("Costo", min_value=0.0, step=100.0, value=float(datos_actuales['Costo']))
                 new_precio = col_e2.number_input("Precio Venta", min_value=0.0, step=100.0, value=float(datos_actuales['Precio']))
                 
                 if st.form_submit_button("💾 Guardar Cambios"):
-                    # Llamamos a la nueva función en database.py
                     if db.actualizar_producto(prod_a_editar, new_name, new_costo, new_precio):
                         st.success(f"Producto '{new_name}' actualizado correctamente.")
                         time.sleep(1)
                         st.rerun()
+
+    # --- NUEVA PESTAÑA: REPORTE PDF ---
+    with tab4:
+        st.subheader("Generar Reporte de Stock para Gimnasio")
+        st.write("Selecciona una sucursal para generar un PDF con su stock actual.")
+        
+        suc_pdf = st.selectbox("Seleccionar Sucursal:", sucursales, key="s_pdf")
+        
+        if st.button("📄 Preparar Reporte"):
+            # 1. Definir nombre de columna de stock (ej: "Stock_Cordoba")
+            col_stock = f"Stock_{suc_pdf}"
+            
+            # 2. Filtrar datos
+            if col_stock in df_prod.columns:
+                # Solo productos con stock > 0
+                df_reporte = df_prod[df_prod[col_stock] > 0][['Nombre', col_stock]].copy()
+            else:
+                df_reporte = pd.DataFrame() # Si no hay columna, está vacío
+
+            if df_reporte.empty:
+                st.warning(f"La sucursal {suc_pdf} no tiene stock registrado para mostrar.")
+            else:
+                # 3. Crear PDF
+                class PDF(FPDF):
+                    def header(self):
+                        self.set_font('Arial', 'B', 15)
+                        self.cell(0, 10, 'Aurum Suplementos - Reporte de Stock', 0, 1, 'C')
+                        self.ln(5)
+
+                    def footer(self):
+                        self.set_y(-15)
+                        self.set_font('Arial', 'I', 8)
+                        self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
+
+                pdf = PDF()
+                pdf.add_page()
+                
+                # Título del reporte
+                pdf.set_font("Arial", size=12)
+                pdf.cell(0, 10, f"Sucursal: {suc_pdf}", ln=True)
+                pdf.cell(0, 10, f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True)
+                pdf.ln(5)
+                
+                # Encabezado tabla
+                pdf.set_fill_color(200, 220, 255)
+                pdf.set_font("Arial", 'B', 11)
+                pdf.cell(140, 10, "Producto", 1, 0, 'C', fill=True)
+                pdf.cell(40, 10, "Cantidad", 1, 1, 'C', fill=True)
+                
+                # Filas
+                pdf.set_font("Arial", size=10)
+                for _, row in df_reporte.iterrows():
+                    # Sanitizar texto para evitar errores de caracteres (tildes, emojis)
+                    nombre_txt = str(row['Nombre']).encode('latin-1', 'replace').decode('latin-1')
+                    cantidad_txt = str(int(row[col_stock]))
+                    
+                    pdf.cell(140, 10, nombre_txt, 1)
+                    pdf.cell(40, 10, cantidad_txt, 1, 1, 'C')
+                
+                # Total de items
+                pdf.ln(5)
+                pdf.set_font("Arial", 'I', 10)
+                pdf.cell(0, 10, f"Total de items diferentes en stock: {len(df_reporte)}", ln=True)
+
+                # Generar bytes del PDF
+                pdf_bytes = pdf.output(dest='S').encode('latin-1')
+                
+                st.success("¡PDF Generado con éxito!")
+                
+                # 4. Botón de Descarga
+                st.download_button(
+                    label=f"⬇️ Descargar Reporte {suc_pdf}",
+                    data=pdf_bytes,
+                    file_name=f"Stock_{suc_pdf}_{datetime.now().strftime('%Y-%m-%d')}.pdf",
+                    mime="application/pdf"
+                )
 
 # --- 5. FINANZAS ---
 elif menu == "Finanzas":

@@ -246,8 +246,34 @@ elif menu == "Stock":
     # AHORA SON 4 PESTAÑAS
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Ver Inventario", "➕ Nuevo Producto", "✏️ Editar Producto", "📄 Reporte PDF"])
     
+    # --- EN app.py --- dentro de la sección STOCK
+
+    # ... (líneas anteriores donde defines tab1, tab2, tab3, tab4) ...
+
     with tab1:
-        st.dataframe(df_prod, use_container_width=True, hide_index=True)
+        st.subheader("📋 Inventario Global")
+        
+        # 1. Campo de búsqueda (Filtro)
+        busqueda = st.text_input("🔍 Filtrar por Producto o Marca", placeholder="Ej: Star Nutrition, Ena, Proteina...")
+        
+        # 2. Lógica de filtrado
+        if not df_prod.empty:
+            if busqueda:
+                # Busca el texto dentro del Nombre (ignora mayúsculas/minúsculas)
+                mask = df_prod['Nombre'].str.contains(busqueda, case=False, na=False)
+                df_show = df_prod[mask]
+            else:
+                df_show = df_prod
+            
+            # 3. Mostrar tabla filtrada
+            st.dataframe(df_show, use_container_width=True, hide_index=True)
+            
+            # (Opcional) Contador de resultados
+            st.caption(f"Mostrando {len(df_show)} productos.")
+        else:
+            st.info("Aún no hay productos registrados.")
+
+    # ... (resto del código de tab2, tab3, tab4) ...
 
     with tab2:
         st.subheader("Dar de alta nuevo producto")
@@ -289,74 +315,130 @@ elif menu == "Stock":
                         st.rerun()
 
     # --- NUEVA PESTAÑA: REPORTE PDF ---
+    # --- PESTAÑA 4: REPORTE PDF (DISEÑO PROFESIONAL) ---
     with tab4:
         st.subheader("Generar Reporte de Stock para Gimnasio")
         st.write("Selecciona una sucursal para generar un PDF con su stock actual.")
         
         suc_pdf = st.selectbox("Seleccionar Sucursal:", sucursales, key="s_pdf")
         
-        if st.button("📄 Preparar Reporte"):
-            # 1. Definir nombre de columna de stock (ej: "Stock_Cordoba")
+        if st.button("📄 Descargar Reporte PDF"):
+            # 1. Preparar datos
             col_stock = f"Stock_{suc_pdf}"
-            
-            # 2. Filtrar datos
             if col_stock in df_prod.columns:
-                # Solo productos con stock > 0
                 df_reporte = df_prod[df_prod[col_stock] > 0][['Nombre', col_stock]].copy()
             else:
-                df_reporte = pd.DataFrame() # Si no hay columna, está vacío
+                df_reporte = pd.DataFrame()
 
             if df_reporte.empty:
-                st.warning(f"La sucursal {suc_pdf} no tiene stock registrado para mostrar.")
+                st.warning(f"La sucursal {suc_pdf} no tiene stock registrado.")
             else:
-                # 3. Crear PDF
+                # 2. Configuración de colores y métricas
+                ORANGE_RGB = (255, 153, 0) # Naranja Aurum
+                GREY_TEXT = (100, 100, 100)
+                GREY_LIGHT = (245, 245, 245) # Para filas alternadas
+
                 class PDF(FPDF):
                     def header(self):
-                        self.set_font('Arial', 'B', 15)
-                        self.cell(0, 10, 'Aurum Suplementos - Reporte de Stock', 0, 1, 'C')
+                        # --- LOGO (Izquierda) ---
+                        # Ajusta la 'w' (ancho) si el logo se ve muy grande o chico
+                        try:
+                            self.image('logo.png', 10, 10, 35) 
+                        except:
+                            pass # Si no encuentra el logo, no falla
+                        
+                        # --- TITULOS (Derecha) ---
+                        self.set_y(12)
+                        self.set_font('Arial', '', 20)
+                        self.set_text_color(0, 0, 0) # Negro
+                        self.cell(0, 10, 'AURUM SUPLEMENTOS', 0, 1, 'R')
+                        
+                        self.set_font('Arial', 'B', 12)
+                        self.set_text_color(*ORANGE_RGB) # Naranja
+                        self.cell(0, 6, 'REPORTE DE STOCK', 0, 1, 'R')
+                        
+                        self.set_font('Arial', '', 10)
+                        self.set_text_color(*GREY_TEXT) # Gris
+                        self.cell(0, 6, f'Sucursal: {suc_pdf}', 0, 1, 'R')
+                        self.cell(0, 6, f'Fecha: {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'R')
+                        
+                        # --- LINEA SEPARADORA ---
                         self.ln(5)
+                        self.set_draw_color(*ORANGE_RGB)
+                        self.set_line_width(0.8)
+                        self.line(10, self.get_y(), 200, self.get_y())
+                        self.ln(10)
 
                     def footer(self):
-                        self.set_y(-15)
+                        # Posición a 3 cm del final
+                        self.set_y(-30)
+                        
+                        # --- REDES Y CONTACTO (Derecha) ---
+                        self.set_font('Arial', '', 10)
+                        self.set_text_color(*ORANGE_RGB)
+                        self.cell(0, 5, '@suplementos.aurum', 0, 1, 'R')
+                        
+                        self.set_text_color(*GREY_TEXT)
+                        self.cell(0, 5, 'Tel: 3516753814', 0, 1, 'R')
+                        
+                        # --- TEXTO LEGAL CENTRADO (Muy abajo) ---
+                        self.set_y(-12)
                         self.set_font('Arial', 'I', 8)
-                        self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
+                        self.set_text_color(200, 200, 200) # Gris muy claro
+                        self.cell(0, 10, 'Aurum Suplementos - Documento Interno', 0, 0, 'C')
 
+                # Instanciar PDF
                 pdf = PDF()
+                pdf.set_auto_page_break(auto=True, margin=35)
                 pdf.add_page()
                 
-                # Título del reporte
-                pdf.set_font("Arial", size=12)
-                pdf.cell(0, 10, f"Sucursal: {suc_pdf}", ln=True)
-                pdf.cell(0, 10, f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True)
-                pdf.ln(5)
+                # --- TABLA DE PRODUCTOS ---
                 
-                # Encabezado tabla
-                pdf.set_fill_color(200, 220, 255)
-                pdf.set_font("Arial", 'B', 11)
-                pdf.cell(140, 10, "Producto", 1, 0, 'C', fill=True)
-                pdf.cell(40, 10, "Cantidad", 1, 1, 'C', fill=True)
+                # Encabezado de Tabla (Naranja)
+                pdf.set_font("Arial", 'B', 10)
+                pdf.set_fill_color(*ORANGE_RGB)
+                pdf.set_text_color(255, 255, 255) # Blanco
+                pdf.set_draw_color(255, 255, 255) # Bordes blancos para limpieza
                 
-                # Filas
+                # Anchos: Producto (150mm), Cantidad (40mm) -> Total 190mm
+                pdf.cell(150, 12, "Producto", 1, 0, 'C', fill=True)
+                pdf.cell(40, 12, "Cantidad", 1, 1, 'C', fill=True)
+                
+                # Cuerpo de Tabla
                 pdf.set_font("Arial", size=10)
-                for _, row in df_reporte.iterrows():
-                    # Sanitizar texto para evitar errores de caracteres (tildes, emojis)
-                    nombre_txt = str(row['Nombre']).encode('latin-1', 'replace').decode('latin-1')
-                    cantidad_txt = str(int(row[col_stock]))
-                    
-                    pdf.cell(140, 10, nombre_txt, 1)
-                    pdf.cell(40, 10, cantidad_txt, 1, 1, 'C')
+                pdf.set_text_color(50, 50, 50) # Gris oscuro para texto
+                pdf.set_draw_color(230, 230, 230) # Gris muy suave para líneas
                 
-                # Total de items
+                fill = False # Variable para alternar colores (Cebra)
+                
+                for _, row in df_reporte.iterrows():
+                    # Sanitizar texto
+                    nombre_txt = str(row['Nombre']).encode('latin-1', 'replace').decode('latin-1')
+                    cant_txt = str(int(row[col_stock]))
+                    
+                    # Color de fondo alternado
+                    if fill:
+                        pdf.set_fill_color(*GREY_LIGHT)
+                    else:
+                        pdf.set_fill_color(255, 255, 255)
+                    
+                    # Celdas con relleno (height=10 para dar aire)
+                    pdf.cell(150, 10, f"  {nombre_txt}", 'B', 0, 'L', fill=True) # 'B' es border-bottom
+                    pdf.cell(40, 10, cant_txt, 'B', 1, 'C', fill=True)
+                    
+                    fill = not fill # Cambiar color para la siguiente vuelta
+                
+                # --- TOTAL ITEMS ---
                 pdf.ln(5)
-                pdf.set_font("Arial", 'I', 10)
+                pdf.set_text_color(*GREY_TEXT)
+                pdf.set_font("Arial", '', 10)
                 pdf.cell(0, 10, f"Total de items diferentes en stock: {len(df_reporte)}", ln=True)
 
-                # Generar bytes del PDF
+                # Generar bytes
                 pdf_bytes = pdf.output(dest='S').encode('latin-1')
                 
-                st.success("¡PDF Generado con éxito!")
+                st.success("¡PDF Generado!")
                 
-                # 4. Botón de Descarga
                 st.download_button(
                     label=f"⬇️ Descargar Reporte {suc_pdf}",
                     data=pdf_bytes,

@@ -10,7 +10,7 @@ st.set_page_config(page_title="Aurum Suplementos", page_icon="logo.png", layout=
 st.sidebar.image("logo.png", width=200)
 st.sidebar.title("Aurum Gestión")
 
-menu = st.sidebar.radio("MENÚ", ["Registrar Venta", "Registrar Compra", "Movimientos", "Stock", "Finanzas"])
+menu = st.sidebar.radio("MENÚ", ["Registrar Venta", "Registrar Compra", "Movimientos", "Stock", "Clientes", "Finanzas"])
 
 # Carga inicial de datos (ahora recuperamos 4 variables)
 df_prod, sucursales, df_ventas, df_compras = db.obtener_datos_globales()
@@ -18,41 +18,111 @@ df_prod, sucursales, df_ventas, df_compras = db.obtener_datos_globales()
 # --- 1. REGISTRAR VENTA ---
 if menu == "Registrar Venta":
     st.title("💸 Nueva Venta")
+    
     if not sucursales:
         st.warning("Carga sucursales en la base de datos primero.")
     else:
+        # --- LOGICA DE CLIENTES (Mantenemos lo anterior) ---
+        lista_tuples = db.obtener_lista_clientes_simple()
+        dict_clientes = {nombre: id_c for id_c, nombre in lista_tuples}
+        nombres_ordenados = sorted(list(dict_clientes.keys()))
+        
+        if "Consumidor Final" in nombres_ordenados:
+            nombres_ordenados.remove("Consumidor Final")
+            opciones_clientes = ["➕ Nuevo Cliente", "Consumidor Final"] + nombres_ordenados
+        else:
+            opciones_clientes = ["➕ Nuevo Cliente"] + nombres_ordenados
+
+        # Auto-selección inteligente
+        idx_defecto = 0
+        if "nuevo_cliente_creado" in st.session_state:
+            nombre_creado = st.session_state["nuevo_cliente_creado"]
+            if nombre_creado in opciones_clientes:
+                idx_defecto = opciones_clientes.index(nombre_creado)
+            del st.session_state["nuevo_cliente_creado"]
+        elif "Consumidor Final" in opciones_clientes:
+            idx_defecto = opciones_clientes.index("Consumidor Final")
+        elif len(opciones_clientes) > 1:
+            idx_defecto = 1 
+
         c1, c2 = st.columns(2)
-        prod_sel = c1.selectbox("Producto", sorted(df_prod['Nombre'].unique()) if not df_prod.empty else [])
+        cliente_sel = c1.selectbox("👤 Cliente", opciones_clientes, index=idx_defecto)
         suc_sel = c2.selectbox("Sucursal", sucursales)
+
+        # Creación rápida de cliente (igual que antes)
+        if cliente_sel == "➕ Nuevo Cliente":
+            st.info("🆕 Creando cliente nuevo...")
+            with st.form("form_rapido_cliente"):
+                nc1, nc2 = st.columns(2)
+                new_nombre = nc1.text_input("Nombre y Apellido")
+                new_ubicacion = nc2.text_input("Ubicación")
+                if st.form_submit_button("💾 Guardar y Usar"):
+                    if new_nombre:
+                        if db.crear_cliente(new_nombre, new_ubicacion):
+                            st.session_state["nuevo_cliente_creado"] = new_nombre
+                            st.rerun()
+            st.stop()
+
+        cliente_id_final = dict_clientes.get(cliente_sel)
+
+        # --- SELECCIÓN DE PRODUCTO Y LÓGICA DE PRECIO DINÁMICO ---
+        prod_sel = st.selectbox("Producto", sorted(df_prod['Nombre'].unique()) if not df_prod.empty else [])
         
         if prod_sel:
             row_prod = df_prod[df_prod['Nombre'] == prod_sel].iloc[0]
-            precio_sug = float(row_prod['Precio'])
+            precio_unitario_lista = float(row_prod['Precio'])
             stock_disp = int(row_prod.get(f"Stock_{suc_sel}", 0))
             
+            # 1. Detectar si cambiamos de producto para resetear valores
+            # Si el usuario cambia de "Proteina" a "Creatina", reiniciamos cantidad a 1 y precio al de lista.
+            if "last_prod_v" not in st.session_state or st.session_state.last_prod_v != prod_sel:
+                st.session_state.last_prod_v = prod_sel
+                st.session_state.v_cant = 1
+                st.session_state.v_precio_total = precio_unitario_lista # Iniciamos con precio de 1 unidad
+                st.rerun() # Recargamos la app para aplicar los cambios
+
+            # 2. Función que actualiza el total cuando cambias la cantidad
+            def actualizar_precio_total():
+                st.session_state.v_precio_total = st.session_state.v_cant * precio_unitario_lista
+
+            # Métricas informativas
             m1, m2 = st.columns(2)
-            m1.metric("Precio Lista", f"${precio_sug:,.0f}")
+            m1.metric("Precio Unitario", f"${precio_unitario_lista:,.0f}")
             
             if stock_disp > 0:
                 m2.metric(f"Stock {suc_sel}", f"{stock_disp} u.", delta="Disponible")
             else:
                 m2.metric(f"Stock {suc_sel}", "❌ AGOTADO", delta="- Sin Stock", delta_color="inverse")
             
-            with st.form("venta_form"):
-                col_f1, col_f2 = st.columns(2)
-                cant = col_f1.number_input("Cantidad", min_value=1, value=1)
-                precio = col_f2.number_input("Precio Final", value=precio_sug)
-                metodo = st.radio("Pago", ["Efectivo", "Transferencia"], horizontal=True)
-                notas = st.text_input("Notas")
-                
-                if st.form_submit_button("✅ VENDER", type="primary", use_container_width=True):
-                    if stock_disp < cant:
-                        st.error("❌ Stock insuficiente.")
-                    else:
-                        if db.registrar_venta(prod_sel, cant, precio, metodo, suc_sel, notas):
-                            st.success("Venta registrada!")
-                            time.sleep(1)
-                            st.rerun()
+            # --- FORMULARIO INTERACTIVO (Sin st.form) ---
+            st.divider()
+            col_f1, col_f2 = st.columns(2)
+            
+            # Cantidad: Al cambiar, ejecuta 'actualizar_precio_total' automáticamente
+            cant = col_f1.number_input("Cantidad", min_value=1, key="v_cant", on_change=actualizar_precio_total)
+            
+            # Precio Total: Se actualiza solo, pero permite edición manual (para descuentos)
+            precio_total_final = col_f2.number_input("Precio Final Total ($)", min_value=0.0, key="v_precio_total")
+            
+            metodo = st.radio("Pago", ["Efectivo", "Transferencia"], horizontal=True)
+            notas = st.text_input("Notas")
+            
+            # Botón de Venta (fuera de formulario)
+            if st.button("✅ REGISTRAR VENTA", type="primary", use_container_width=True):
+                if stock_disp < cant:
+                    st.error("❌ Stock insuficiente.")
+                else:
+                    # Calculamos el precio unitario real para la base de datos
+                    # (Total / Cantidad = Unitario)
+                    precio_unitario_calculado = precio_total_final / cant
+                    
+                    if db.registrar_venta(prod_sel, cant, precio_unitario_calculado, metodo, suc_sel, notas, cliente_id_final):
+                        st.success(f"¡Venta registrada correctamente!")
+                        time.sleep(1)
+                        # Borramos la memoria del último producto para forzar reset en la próxima venta
+                        if "last_prod_v" in st.session_state:
+                            del st.session_state.last_prod_v
+                        st.rerun()
 
 # --- 2. REGISTRAR COMPRA ---
 elif menu == "Registrar Compra":
@@ -521,3 +591,102 @@ elif menu == "Finanzas":
     m3.metric("Margen", f"${(val_venta - val_costo):,.0f}")
     
     st.subheader(f"💎 Patrimonio Total: ${(final_ef + final_tr + val_venta):,.0f}")
+# --- NUEVA SECCIÓN: CLIENTES ---
+# --- SECCIÓN: CLIENTES ---
+elif menu == "Clientes":
+    st.title("👥 Gestión de Clientes")
+    
+    # Ahora son 3 pestañas
+    tab1, tab2, tab3 = st.tabs(["📊 Directorio y Métricas", "➕ Nuevo Cliente", "⚙️ Administrar (Editar/Borrar)"])
+    
+    # --- TAB 1: LISTADO (Igual que antes) ---
+    with tab1:
+        st.subheader("Listado de Clientes")
+        df_clientes = db.obtener_clientes_metricas()
+        
+        if not df_clientes.empty:
+            df_clientes['total_gastado'] = df_clientes['total_gastado'].apply(lambda x: f"${x:,.0f}")
+            
+            search_c = st.text_input("🔍 Buscar cliente por nombre", "")
+            if search_c:
+                df_clientes = df_clientes[df_clientes['nombre'].str.contains(search_c, case=False, na=False)]
+            
+            st.dataframe(
+                df_clientes, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "nombre": "Cliente",
+                    "ubicacion": "Ubicación",
+                    "total_gastado": "Total Comprado Histórico",
+                    "producto_favorito": "Producto Estrella 🌟"
+                }
+            )
+        else:
+            st.info("No hay clientes registrados.")
+
+    # --- TAB 2: ALTA (Igual que antes) ---
+    with tab2:
+        st.subheader("Dar de alta nuevo cliente")
+        with st.form("form_cliente"):
+            c_nom = st.text_input("Nombre y Apellido")
+            c_loc = st.text_input("Ubicación / Ciudad")
+            
+            if st.form_submit_button("Guardar Cliente"):
+                if c_nom:
+                    if db.crear_cliente(c_nom, c_loc):
+                        st.success(f"Cliente {c_nom} agregado correctamente.")
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    st.error("El nombre es obligatorio.")
+
+    # --- TAB 3: EDITAR / ELIMINAR (NUEVO) ---
+    with tab3:
+        st.subheader("Modificar o Eliminar Clientes")
+        
+        # 1. Obtener lista para seleccionar
+        lista_tuples = db.obtener_lista_clientes_simple() # [(id, nombre), ...]
+        
+        if not lista_tuples:
+            st.info("No hay clientes para editar.")
+        else:
+            # Crear diccionario ID -> Nombre para facilitar
+            # Ojo: aquí necesitamos seleccionar por Nombre visualmente, pero operar con ID
+            nombres_map = {nombre: id_c for id_c, nombre in lista_tuples}
+            lista_nombres = sorted(list(nombres_map.keys()))
+            
+            cliente_a_editar = st.selectbox("Seleccionar Cliente", lista_nombres)
+            id_editar = nombres_map[cliente_a_editar]
+            
+            # Buscar datos actuales de ese cliente específico (Reciclamos la función de metricas o hacemos query simple)
+            # Para simplificar, asumimos que 'ubicacion' la sacamos del DF general o hacemos query rapida.
+            # Haremos una búsqueda rápida en el DF que ya cargamos en tab1 para no hacer otra query SQL
+            datos_actuales = df_clientes[df_clientes['nombre'] == cliente_a_editar].iloc[0] if not df_clientes.empty else None
+            
+            if datos_actuales is not None:
+                st.divider()
+                col_edit, col_delete = st.columns([2, 1])
+                
+                with col_edit:
+                    st.markdown("#### ✏️ Editar Datos")
+                    with st.form("form_editar_cliente"):
+                        new_nom = st.text_input("Nombre", value=datos_actuales['nombre'])
+                        new_loc = st.text_input("Ubicación", value=datos_actuales['ubicacion'])
+                        
+                        if st.form_submit_button("💾 Guardar Cambios"):
+                            if db.actualizar_cliente(id_editar, new_nom, new_loc):
+                                st.success("Datos actualizados correctamente.")
+                                time.sleep(1)
+                                st.rerun()
+                
+                with col_delete:
+                    st.markdown("#### 🗑️ Zona de Peligro")
+                    st.write("Si eliminas al cliente, sus ventas históricas quedarán como 'Anónimas', pero NO se borrarán los montos de la caja.")
+                    
+                    with st.expander("Confirmar eliminación"):
+                        if st.button("❌ ELIMINAR CLIENTE", type="primary"):
+                            if db.eliminar_cliente(id_editar):
+                                st.success("Cliente eliminado.")
+                                time.sleep(1)
+                                st.rerun()

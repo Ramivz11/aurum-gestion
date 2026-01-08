@@ -2,7 +2,53 @@ import mysql.connector
 import pandas as pd
 import streamlit as st
 from datetime import datetime
+# --- EN database.py ---
 
+def obtener_movimientos():
+    conn = get_db_connection()
+    try:
+        # 1. Traer Ventas (adaptamos nombres de columnas para que coincidan)
+        sql_v = """
+            SELECT 
+                fecha, 
+                producto, 
+                cantidad, 
+                total as monto, 
+                ubicacion, 
+                'Venta' as tipo 
+            FROM ventas
+        """
+        df_v = pd.read_sql(sql_v, conn)
+        
+        # 2. Traer Compras
+        sql_c = """
+            SELECT 
+                fecha, 
+                producto, 
+                cantidad, 
+                costo_total as monto, 
+                ubicacion, 
+                'Compra' as tipo 
+            FROM compras
+        """
+        df_c = pd.read_sql(sql_c, conn)
+        
+        # 3. Unir ambos reportes en uno solo
+        df_movimientos = pd.concat([df_v, df_c], ignore_index=True)
+        
+        # 4. Ordenar por fecha (más reciente primero)
+        if not df_movimientos.empty:
+            df_movimientos['fecha'] = pd.to_datetime(df_movimientos['fecha'])
+            df_movimientos = df_movimientos.sort_values(by='fecha', ascending=False)
+            
+        return df_movimientos
+
+    except Exception as e:
+        st.error(f"Error al obtener movimientos: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn.is_connected():
+            conn.close()
 # --- 1. CONEXIÓN ---
 def get_db_connection():
     if "mysql" in st.secrets:
@@ -126,11 +172,12 @@ def actualizar_producto(nombre_anterior, nuevo_nombre, nuevo_costo, nuevo_precio
         conn.close()
 
 # --- 4. VENTAS ---
-def registrar_venta(producto, cantidad, precio, metodo, ubicacion, notas):
+def registrar_venta(producto, cantidad, precio, metodo, ubicacion, notas, cliente_id): # <--- Nuevo parámetro
     conn = get_db_connection()
     cursor = conn.cursor(buffered=True)
     try:
         cursor.execute("SET SQL_SAFE_UPDATES = 0;")
+        # Verificar Stock
         cursor.execute("SELECT cantidad FROM inventario WHERE producto_nombre = %s AND sucursal_nombre = %s", (producto, ubicacion))
         res = cursor.fetchone()
         stock_actual = res[0] if res else 0
@@ -139,11 +186,17 @@ def registrar_venta(producto, cantidad, precio, metodo, ubicacion, notas):
             st.error(f"⚠️ Stock insuficiente. Hay {stock_actual}.")
             return False
 
+        # Restar Stock
         cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre = %s AND sucursal_nombre = %s", (cantidad, producto, ubicacion))
+        
+        # Registrar Venta (Ahora con cliente_id)
         total = precio * cantidad
         fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sql = "INSERT INTO ventas (fecha, producto, cantidad, precio_unitario, total, metodo_pago, ubicacion, notas) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
-        cursor.execute(sql, (fecha, producto, cantidad, precio, total, metodo, ubicacion, notas))
+        
+        # SQL Actualizado
+        sql = "INSERT INTO ventas (fecha, producto, cantidad, precio_unitario, total, metodo_pago, ubicacion, notas, cliente_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        cursor.execute(sql, (fecha, producto, cantidad, precio, total, metodo, ubicacion, notas, cliente_id))
+        
         conn.commit()
         return True
     except Exception as e:
@@ -334,6 +387,112 @@ def actualizar_saldo_inicial(cuenta, monto):
         return True
     except Exception as e:
         st.error(f"Error saldos: {e}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+# --- GESTIÓN DE CLIENTES ---
+
+def obtener_clientes_metricas():
+    """Devuelve un DataFrame con clientes, total gastado y producto favorito."""
+    conn = get_db_connection()
+    try:
+        # Esta consulta calcula el total gastado y usa una subconsulta para el producto más vendido
+        sql = """
+        SELECT 
+            c.id,
+            c.nombre, 
+            c.ubicacion, 
+            COALESCE(SUM(v.total), 0) as total_gastado,
+            (
+                SELECT v2.producto 
+                FROM ventas v2 
+                WHERE v2.cliente_id = c.id 
+                GROUP BY v2.producto 
+                ORDER BY SUM(v2.cantidad) DESC 
+                LIMIT 1
+            ) as producto_favorito
+        FROM clientes c
+        LEFT JOIN ventas v ON c.id = v.cliente_id
+        GROUP BY c.id, c.nombre, c.ubicacion
+        ORDER BY total_gastado DESC;
+        """
+        df = pd.read_sql(sql, conn)
+        return df
+    except Exception as e:
+        st.error(f"Error al obtener clientes: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn.is_connected(): conn.close()
+
+def crear_cliente(nombre, ubicacion):
+    conn = get_db_connection()
+    cursor = conn.cursor(buffered=True)
+    try:
+        cursor.execute("SELECT id FROM clientes WHERE nombre = %s", (nombre,))
+        if cursor.fetchone():
+            st.warning("⚠️ El cliente ya existe.")
+            return False
+        
+        sql = "INSERT INTO clientes (nombre, ubicacion) VALUES (%s, %s)"
+        cursor.execute(sql, (nombre, ubicacion))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Error creando cliente: {e}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def obtener_lista_clientes_simple():
+    """Retorna una lista de nombres para el selectbox"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre FROM clientes ORDER BY nombre ASC")
+        return cursor.fetchall() # Retorna lista de tuplas (id, nombre)
+    except Exception:
+        return []
+    finally:
+        if conn.is_connected(): conn.close()
+def actualizar_cliente(id_cliente, nuevo_nombre, nueva_ubicacion):
+    conn = get_db_connection()
+    cursor = conn.cursor(buffered=True)
+    try:
+        # Validar si el nombre nuevo ya lo usa OTRO cliente
+        cursor.execute("SELECT id FROM clientes WHERE nombre = %s AND id != %s", (nuevo_nombre, id_cliente))
+        if cursor.fetchone():
+            st.warning(f"⚠️ El nombre '{nuevo_nombre}' ya está en uso.")
+            return False
+            
+        sql = "UPDATE clientes SET nombre = %s, ubicacion = %s WHERE id = %s"
+        cursor.execute(sql, (nuevo_nombre, nueva_ubicacion, id_cliente))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Error al actualizar: {e}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def eliminar_cliente(id_cliente):
+    conn = get_db_connection()
+    cursor = conn.cursor(buffered=True)
+    try:
+        # 1. Desvincular ventas históricas (Poner cliente_id en NULL)
+        # Esto evita que se borren las ventas o de error de clave foránea
+        cursor.execute("UPDATE ventas SET cliente_id = NULL WHERE cliente_id = %s", (id_cliente,))
+        
+        # 2. Eliminar el cliente
+        cursor.execute("DELETE FROM clientes WHERE id = %s", (id_cliente,))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        st.error(f"Error al eliminar: {e}")
         return False
     finally:
         cursor.close()

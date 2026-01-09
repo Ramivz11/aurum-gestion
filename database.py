@@ -327,15 +327,37 @@ def obtener_venta_por_id(id_v):
 def actualizar_venta(id_v, nc, np, nm, nn):
     conn = get_db_connection(); cursor = conn.cursor()
     try:
-        cursor.execute("SELECT producto, variante, sucursal_nombre, cantidad FROM ventas WHERE id=%s", (id_v,))
+        # CORRECCIÓN: Cambiamos 'sucursal_nombre' por 'ubicacion' que es el nombre real en la tabla ventas
+        cursor.execute("SELECT producto, variante, ubicacion, cantidad FROM ventas WHERE id=%s", (id_v,))
         row = cursor.fetchone()
-        if not row: return False, "No existe"
-        diff = nc - row[3]
-        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (diff, row[0], row[1] if row[1] else '', row[2]))
-        cursor.execute("UPDATE ventas SET cantidad=%s, precio_unitario=%s, total=%s, metodo_pago=%s, notas=%s WHERE id=%s", (nc, np, nc*np, nm, nn, id_v))
-        conn.commit(); return True, "Ok"
-    except Exception as e: return False, str(e)
-    finally: conn.close()
+        
+        if not row: return False, "No existe la venta"
+        
+        # Datos actuales en la base de datos
+        prod_db = row[0]
+        var_db = row[1] if row[1] else ''
+        suc_db = row[2] # Aquí recibimos la ubicación correctamente
+        cant_old = row[3]
+        
+        # Calculamos la diferencia para ajustar el stock
+        # Si vendí 1 y ahora pongo 3, la diferencia es +2 (tengo que restar 2 más al stock)
+        # Si vendí 3 y ahora pongo 1, la diferencia es -2 (tengo que devolver 2 al stock)
+        diff = nc - cant_old
+        
+        # Actualizamos el inventario (Aquí sí se llama 'sucursal_nombre')
+        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", 
+                       (diff, prod_db, var_db, suc_db))
+        
+        # Actualizamos la venta con los nuevos datos
+        cursor.execute("UPDATE ventas SET cantidad=%s, precio_unitario=%s, total=%s, metodo_pago=%s, notas=%s WHERE id=%s", 
+                       (nc, np, nc*np, nm, nn, id_v))
+        
+        conn.commit()
+        return True, "Ok"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conn.close()
 # --- AGREGAR AL FINAL DE database.py (PARA COMPRAS) ---
 
 def obtener_compra_por_id(id_c):
@@ -351,32 +373,30 @@ def actualizar_compra(id_compra, nueva_cant, nuevo_costo, nuevo_prov, nuevo_meto
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # 1. Obtener datos viejos
-        cursor.execute("SELECT producto, variante, sucursal_nombre, cantidad, ubicacion FROM compras WHERE id = %s", (id_compra,))
+        # 1. Obtener datos viejos (CORREGIDO: Usamos 'ubicacion' y quitamos 'sucursal_nombre' que no existe)
+        cursor.execute("SELECT producto, variante, ubicacion, cantidad FROM compras WHERE id = %s", (id_compra,))
         row = cursor.fetchone()
+        
         if not row: return False, "Compra no encontrada"
         
-        prod, var, _, old_cant, suc = row
+        # Desempaquetamos los 4 valores correctos
+        prod, var, suc, old_cant = row
         var = var if var else ""
         
         # 2. Calcular diferencia de Stock (Nuevo - Viejo)
-        # Ej: Compré 5, corrijo a 8. Diferencia +3 (Sumar al stock)
-        # Ej: Compré 5, corrijo a 2. Diferencia -3 (Restar al stock)
         diferencia = nueva_cant - old_cant
         
         # 3. Validación de Seguridad
-        # Si la diferencia es negativa (estamos achicando la compra), verificamos que ese stock no se haya vendido ya.
+        # Si estamos reduciendo la compra (ej: corregir de 10 a 5), verificar que tengamos ese stock para "devolver"
         if diferencia < 0:
             cursor.execute("SELECT cantidad FROM inventario WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (prod, var, suc))
             res = cursor.fetchone()
             stock_actual = res[0] if res else 0
             
-            # Si quiero quitar 3 pero solo tengo 1 en stock, error.
             if stock_actual < abs(diferencia):
                 return False, f"No puedes reducir {abs(diferencia)} u. porque solo quedan {stock_actual} en stock (ya se vendieron)."
 
-        # 4. Actualizar Inventario
-        # Sumamos la diferencia (si es negativa, restará)
+        # 4. Actualizar Inventario (Usamos 'sucursal_nombre' porque así se llama en la tabla inventario)
         cursor.execute("""
             UPDATE inventario SET cantidad = cantidad + %s 
             WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s

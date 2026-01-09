@@ -118,10 +118,7 @@ if menu == "Registrar Venta":
             # Consultar Stock (Ahora buscamos en df_prod que tiene claves combinadas "Nombre | Sabor")
             row_stock = df_prod[df_prod['Nombre'] == prod_sel_txt]
             
-            if not row_stock.empty:
-                stock_disp = int(row_stock.iloc[0].get(f"Stock_{suc_sel}", 0))
-            else:
-                stock_disp = 0
+            stock_disp = db.obtener_stock_actual(nombre_real, suc_sel, variante_real)
                 
             # --- C) PRECIO DINÁMICO ---
             

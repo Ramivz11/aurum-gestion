@@ -398,3 +398,29 @@ def actualizar_compra(id_compra, nueva_cant, nuevo_costo, nuevo_prov, nuevo_meto
     finally:
         cursor.close()
         conn.close()
+        
+# --- EN database.py ---
+
+def obtener_stock_actual(producto, sucursal, variante=""):
+    """
+    Obtiene la cantidad disponible de un producto/variante en una sucursal específica.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Aseguramos que variante no sea None para la consulta
+        variante = variante if variante else ""
+        
+        sql = """
+        SELECT cantidad FROM inventario 
+        WHERE producto_nombre = %s AND sucursal_nombre = %s AND variante = %s
+        """
+        cursor.execute(sql, (producto, sucursal, variante))
+        result = cursor.fetchone()
+        
+        return result[0] if result else 0
+    except Exception as e:
+        print(f"Error consultando stock: {e}")
+        return 0
+    finally:
+        conn.close()

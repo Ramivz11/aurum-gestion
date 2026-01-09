@@ -3,8 +3,9 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-# --- 1. CONEXIÓN ---
+# --- 1. CONEXIÓN Y AUTO-REPARACIÓN ---
 def get_db_connection():
+    # Detectar si estamos en la nube o local
     if "mysql" in st.secrets:
         return mysql.connector.connect(
             host=st.secrets["mysql"]["host"],
@@ -21,31 +22,97 @@ def get_db_connection():
             database="aurum_db"
         )
 
-# ==========================================
-#      NUEVA LÓGICA DE STOCK (MATRIZ)
-# ==========================================
+def asegurar_estructura_db(conn):
+    """
+    Función de AUTO-CURACIÓN:
+    Verifica que las tablas tengan las columnas nuevas (activo, cliente_id, etc).
+    Si no están, las crea automáticamente para evitar errores.
+    """
+    cursor = conn.cursor()
+    try:
+        # 1. Verificar columna 'activo' en productos
+        cursor.execute("SHOW COLUMNS FROM productos LIKE 'activo'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE productos ADD COLUMN activo TINYINT(1) DEFAULT 1")
+            cursor.execute("UPDATE productos SET activo = 1") # Activar todos los existentes
+            conn.commit()
+            print("✅ DB Reparada: Columna 'activo' creada.")
 
+        # 2. Verificar columna 'cliente_id' en ventas
+        cursor.execute("SHOW COLUMNS FROM ventas LIKE 'cliente_id'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE ventas ADD COLUMN cliente_id INT DEFAULT NULL")
+            conn.commit()
+            print("✅ DB Reparada: Columna 'cliente_id' creada.")
+
+    except Exception as e:
+        print(f"⚠️ Advertencia de esquema: {e}")
+    finally:
+        cursor.close()
+
+# --- 2. LECTURA DE DATOS GLOBAL ---
+def obtener_datos_globales():
+    conn = get_db_connection()
+    
+    # ¡PASO CRÍTICO! Reparar DB antes de leer
+    asegurar_estructura_db(conn)
+    
+    try:
+        # Sucursales
+        df_suc = pd.read_sql("SELECT nombre FROM sucursales", conn)
+        lista_sucursales = df_suc['nombre'].tolist() if not df_suc.empty else []
+        
+        # Productos (Ahora seguro existe 'activo')
+        try:
+            df_prod = pd.read_sql("SELECT nombre as Nombre, costo as Costo, precio as Precio FROM productos WHERE activo=1", conn)
+        except:
+            # Fallback por si acaso
+            df_prod = pd.read_sql("SELECT nombre as Nombre, costo as Costo, precio as Precio FROM productos", conn)
+        
+        # Ventas (Renombrar SIEMPRE para evitar KeyError: 'ID')
+        df_ventas = pd.read_sql("SELECT * FROM ventas ORDER BY fecha DESC", conn)
+        columnas_ventas = {
+            'id': 'ID', 'fecha': 'FECHA', 'producto': 'PRODUCTO', 
+            'cantidad': 'CANTIDAD', 'precio_unitario': 'PRECIO UNITARIO', 
+            'total': 'TOTAL', 'metodo_pago': 'METODO PAGO', 
+            'ubicacion': 'UBICACION', 'notas': 'NOTAS', 'cliente_id': 'CLIENTE_ID',
+            'variante': 'VARIANTE'
+        }
+        df_ventas = df_ventas.rename(columns=columnas_ventas)
+        
+        # Compras
+        df_compras = pd.read_sql("SELECT * FROM compras ORDER BY fecha DESC", conn)
+        columnas_compras = {
+            'id': 'ID', 'fecha': 'FECHA', 'producto': 'PRODUCTO', 
+            'cantidad': 'CANTIDAD', 'costo_total': 'COSTO', 
+            'proveedor': 'PROVEEDOR', 'metodo_pago': 'METODO PAGO', 
+            'ubicacion': 'UBICACION', 'notas': 'NOTAS',
+            'variante': 'VARIANTE'
+        }
+        df_compras = df_compras.rename(columns=columnas_compras)
+
+        return df_prod, lista_sucursales, df_ventas, df_compras
+    except Exception as e:
+        st.error(f"Error crítico leyendo datos: {e}")
+        return pd.DataFrame(), [], pd.DataFrame(), pd.DataFrame()
+    finally:
+        conn.close()
+
+# --- 3. LÓGICA DE STOCK TIPO EXCEL (MATRIZ) ---
 def obtener_datos_matrix():
-    """Obtiene un DataFrame formateado para edición tipo Excel"""
     conn = get_db_connection()
     try:
-        # 1. Productos Base (Solo activos)
-        # IMPORTANTE: Aquí se usa la columna 'activo' que acabamos de crear
         sql_prod = "SELECT nombre, costo, precio FROM productos WHERE activo = 1 ORDER BY nombre"
         df_base = pd.read_sql(sql_prod, conn)
         
-        # 2. Stock (Inventario)
         sql_stock = "SELECT producto_nombre, variante, sucursal_nombre, cantidad FROM inventario"
         df_stock = pd.read_sql(sql_stock, conn)
         
-        # 3. Sucursales
         df_suc = pd.read_sql("SELECT nombre FROM sucursales ORDER BY nombre", conn)
         sucursales = df_suc['nombre'].tolist() if not df_suc.empty else []
 
-        if df_base.empty:
-            return pd.DataFrame(), sucursales
+        if df_base.empty: return pd.DataFrame(), sucursales
 
-        # --- CONSTRUCCIÓN DE LA MATRIZ ---
         df_vars = pd.read_sql("SELECT producto_nombre, nombre_variante FROM variantes", conn)
         
         lista_skus = []
@@ -61,32 +128,23 @@ def obtener_datos_matrix():
         
         df_matrix = pd.DataFrame(lista_skus)
         
-        # Pegar Stock
         if not df_stock.empty and not df_matrix.empty:
             df_stock['variante'] = df_stock['variante'].fillna('')
             for suc in sucursales:
                 col_name = f"{suc}"
                 df_matrix[col_name] = 0
                 stock_suc = df_stock[df_stock['sucursal_nombre'] == suc]
-                # Crear diccionario para mapeo rápido
                 stock_map = stock_suc.set_index(['producto_nombre', 'variante'])['cantidad'].to_dict()
-                
-                def get_qty(row):
-                    return stock_map.get((row['Producto'], row['Variante']), 0)
-                
-                df_matrix[col_name] = df_matrix.apply(get_qty, axis=1)
+                df_matrix[col_name] = df_matrix.apply(lambda row: stock_map.get((row['Producto'], row['Variante']), 0), axis=1)
 
         return df_matrix, sucursales
     except Exception as e:
-        # Si falla, devolvemos vacío para no romper la app
-        print(f"Error matrix: {e}")
         return pd.DataFrame(), []
     finally:
-        if conn.is_connected(): conn.close()
+        conn.close()
 
 def guardar_cambios_masivos(df_nuevo, sucursales):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     try:
         for index, row in df_nuevo.iterrows():
             prod = row['Producto']
@@ -98,173 +156,92 @@ def guardar_cambios_masivos(df_nuevo, sucursales):
             
             for suc in sucursales:
                 cantidad = int(row[suc])
-                sql_stock = """
-                    INSERT INTO inventario (producto_nombre, sucursal_nombre, variante, cantidad)
-                    VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE cantidad = %s
-                """
+                sql_stock = "INSERT INTO inventario (producto_nombre, sucursal_nombre, variante, cantidad) VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad = %s"
                 cursor.execute(sql_stock, (prod, suc, var, cantidad, cantidad))
-        conn.commit()
-        return True
-    except Exception as e:
-        conn.rollback()
-        st.error(f"Error al guardar: {e}")
-        return False
-    finally:
-        cursor.close()
-        conn.close()
-
-def obtener_listas_auxiliares():
-    conn = get_db_connection()
-    try:
-        sucursales = pd.read_sql("SELECT nombre FROM sucursales", conn)['nombre'].tolist()
-        productos = pd.read_sql("SELECT nombre FROM productos WHERE activo = 1", conn)['nombre'].tolist()
-        return sucursales, productos
-    finally:
-        conn.close()
-
-def obtener_variantes_de_producto(producto):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT nombre_variante FROM variantes WHERE producto_nombre = %s", (producto,))
-        res = cursor.fetchall()
-        return [r[0] for r in res] if res else []
-    finally:
-        conn.close()
-
-def renombrar_variante(prod, old_var, new_var):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT id FROM variantes WHERE producto_nombre=%s AND nombre_variante=%s", (prod, new_var))
-        if cursor.fetchone(): return False, "El nombre ya existe."
-        
-        cursor.execute("UPDATE variantes SET nombre_variante=%s WHERE producto_nombre=%s AND nombre_variante=%s", (new_var, prod, old_var))
-        
-        tablas = ['inventario', 'ventas', 'compras']
-        for t in tablas:
-            try:
-                col_prod = 'producto_nombre' if t == 'inventario' else 'producto'
-                sql = f"UPDATE {t} SET variante=%s WHERE {col_prod}=%s AND variante=%s"
-                cursor.execute(sql, (new_var, prod, old_var))
-            except: pass
-            
-        conn.commit()
-        return True, "Renombrado exitoso."
-    except Exception as e:
-        conn.rollback()
-        return False, str(e)
-    finally:
-        conn.close()
-
-def mover_stock_entre_variantes(prod, suc, var_origen, var_destino, cantidad):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND sucursal_nombre=%s AND variante=%s", (cantidad, prod, suc, var_origen))
-        cursor.execute("""
-            INSERT INTO inventario (producto_nombre, sucursal_nombre, variante, cantidad)
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE cantidad = cantidad + %s
-        """, (prod, suc, var_destino, cantidad, cantidad))
-        conn.commit()
-        return True
-    except Exception as e:
-        conn.rollback()
-        return False
-    finally:
-        conn.close()
-
-def borrado_logico_producto(nombre_producto):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE productos SET activo = 0 WHERE nombre = %s", (nombre_producto,))
-        conn.commit()
-        return True
+        conn.commit(); return True
     except: return False
     finally: conn.close()
 
-# ==========================================
-#      COMPATIBILIDAD (Renombrado de Columnas)
-# ==========================================
-
-def obtener_datos_globales():
-    """Esta función es CRÍTICA para evitar el KeyError: 'ID'"""
+# --- 4. FUNCIONES AUXILIARES FALTANTES (Error AttributeError) ---
+def obtener_listas_auxiliares():
     conn = get_db_connection()
     try:
-        # Sucursales
-        df_suc = pd.read_sql("SELECT nombre FROM sucursales", conn)
-        lista_sucursales = df_suc['nombre'].tolist() if not df_suc.empty else []
-        
-        # Productos Base (Para precios)
-        # Nota: Usamos activo=1, si falla es porque no corriste la migración del PASO 1
-        df_prod = pd.read_sql("SELECT nombre as Nombre, costo as Costo, precio as Precio FROM productos WHERE activo=1", conn)
-        
-        # Ventas (¡RENOMBRAMOS A MAYÚSCULAS!)
-        df_ventas = pd.read_sql("SELECT * FROM ventas ORDER BY fecha DESC", conn)
-        df_ventas = df_ventas.rename(columns={
-            'id': 'ID', 'fecha': 'FECHA', 'producto': 'PRODUCTO', 
-            'cantidad': 'CANTIDAD', 'precio_unitario': 'PRECIO UNITARIO', 
-            'total': 'TOTAL', 'metodo_pago': 'METODO PAGO', 
-            'ubicacion': 'UBICACION', 'notas': 'NOTAS', 'cliente_id': 'CLIENTE_ID',
-            'variante': 'VARIANTE'
-        })
-        
-        # Compras (¡RENOMBRAMOS A MAYÚSCULAS!)
-        df_compras = pd.read_sql("SELECT * FROM compras ORDER BY fecha DESC", conn)
-        df_compras = df_compras.rename(columns={
-            'id': 'ID', 'fecha': 'FECHA', 'producto': 'PRODUCTO', 
-            'cantidad': 'CANTIDAD', 'costo_total': 'COSTO', 
-            'proveedor': 'PROVEEDOR', 'metodo_pago': 'METODO PAGO', 
-            'ubicacion': 'UBICACION', 'notas': 'NOTAS',
-            'variante': 'VARIANTE'
-        })
+        s = pd.read_sql("SELECT nombre FROM sucursales", conn)['nombre'].tolist()
+        p = pd.read_sql("SELECT nombre FROM productos WHERE activo = 1", conn)['nombre'].tolist()
+        return s, p
+    except: return [], []
+    finally: conn.close()
 
-        return df_prod, lista_sucursales, df_ventas, df_compras
-    except Exception as e:
-        st.error(f"Error datos globales: {e}")
-        return pd.DataFrame(), [], pd.DataFrame(), pd.DataFrame()
-    finally:
-        conn.close()
+def obtener_variantes_de_producto(producto):
+    conn = get_db_connection(); cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT nombre_variante FROM variantes WHERE producto_nombre = %s", (producto,))
+        res = cursor.fetchall()
+        return [r[0] for r in res] if res else []
+    finally: conn.close()
+
+def renombrar_variante(prod, old_var, new_var):
+    conn = get_db_connection(); cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE variantes SET nombre_variante=%s WHERE producto_nombre=%s AND nombre_variante=%s", (new_var, prod, old_var))
+        cursor.execute("UPDATE inventario SET variante=%s WHERE producto_nombre=%s AND variante=%s", (new_var, prod, old_var))
+        cursor.execute("UPDATE ventas SET variante=%s WHERE producto=%s AND variante=%s", (new_var, prod, old_var))
+        cursor.execute("UPDATE compras SET variante=%s WHERE producto=%s AND variante=%s", (new_var, prod, old_var))
+        conn.commit(); return True, "Ok"
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def mover_stock_entre_variantes(prod, suc, var_origen, var_destino, cantidad):
+    conn = get_db_connection(); cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND sucursal_nombre=%s AND variante=%s", (cantidad, prod, suc, var_origen))
+        cursor.execute("INSERT INTO inventario (producto_nombre, sucursal_nombre, variante, cantidad) VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad = cantidad + %s", (prod, suc, var_destino, cantidad, cantidad))
+        conn.commit(); return True
+    except: return False
+    finally: conn.close()
+
+def borrado_logico_producto(nombre_producto):
+    conn = get_db_connection(); cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE productos SET activo = 0 WHERE nombre = %s", (nombre_producto,))
+        conn.commit(); return True
+    except: return False
+    finally: conn.close()
+
+def crear_producto(nombre, costo, precio):
+    conn = get_db_connection(); cursor=conn.cursor()
+    try: 
+        cursor.execute("INSERT INTO productos (nombre, costo, precio, activo) VALUES (%s, %s, %s, 1)", (nombre, costo, precio))
+        conn.commit(); return True
+    except: return False
+    finally: conn.close()
+
+def crear_variante(prod, var):
+    conn = get_db_connection(); cursor=conn.cursor()
+    try: 
+        cursor.execute("INSERT INTO variantes (producto_nombre, nombre_variante) VALUES (%s, %s)", (prod, var))
+        conn.commit(); return True, "Ok"
+    except: return False, "Error"
+    finally: conn.close()
 
 def obtener_catalogo_venta():
     conn = get_db_connection()
     try:
-        sql = """
-        SELECT p.nombre, p.precio, v.nombre_variante 
-        FROM productos p
-        LEFT JOIN variantes v ON p.nombre = v.producto_nombre
-        WHERE p.activo = 1
-        ORDER BY p.nombre, v.nombre_variante
-        """
-        return pd.read_sql(sql, conn)
+        return pd.read_sql("SELECT p.nombre, p.precio, v.nombre_variante FROM productos p LEFT JOIN variantes v ON p.nombre = v.producto_nombre WHERE p.activo = 1 ORDER BY p.nombre, v.nombre_variante", conn)
     except: return pd.DataFrame()
     finally: conn.close()
 
-# ==========================================
-#      CLIENTES (Recuperado)
-# ==========================================
-
+# --- 5. CLIENTES Y FINANZAS (Recuperados) ---
 def obtener_clientes_metricas():
     conn = get_db_connection()
     try:
-        sql = """
-        SELECT c.id, c.nombre, c.ubicacion, COALESCE(SUM(v.total), 0) as total_gastado,
-        (SELECT v2.producto FROM ventas v2 WHERE v2.cliente_id = c.id GROUP BY v2.producto ORDER BY SUM(v2.cantidad) DESC LIMIT 1) as producto_favorito
-        FROM clientes c LEFT JOIN ventas v ON c.id = v.cliente_id
-        GROUP BY c.id, c.nombre, c.ubicacion ORDER BY total_gastado DESC
-        """
-        return pd.read_sql(sql, conn)
+        return pd.read_sql("SELECT c.id, c.nombre, c.ubicacion, COALESCE(SUM(v.total), 0) as total_gastado FROM clientes c LEFT JOIN ventas v ON c.id = v.cliente_id GROUP BY c.id, c.nombre, c.ubicacion ORDER BY total_gastado DESC", conn)
     except: return pd.DataFrame()
     finally: conn.close()
 
-def crear_cliente(nombre, ubicacion):
+def crear_cliente(n, u):
     conn = get_db_connection(); cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO clientes (nombre, ubicacion) VALUES (%s, %s)", (nombre, ubicacion))
-        conn.commit(); return True
+    try: cursor.execute("INSERT INTO clientes (nombre, ubicacion) VALUES (%s, %s)", (n, u)); conn.commit(); return True
     except: return False
     finally: conn.close()
 
@@ -274,24 +251,20 @@ def obtener_lista_clientes_simple():
     except: return []
     finally: conn.close()
 
-def actualizar_cliente(id_c, nom, loc):
+def actualizar_cliente(id_c, n, u):
     conn = get_db_connection(); cursor = conn.cursor()
-    try: cursor.execute("UPDATE clientes SET nombre=%s, ubicacion=%s WHERE id=%s", (nom, loc, id_c)); conn.commit(); return True
+    try: cursor.execute("UPDATE clientes SET nombre=%s, ubicacion=%s WHERE id=%s", (n, u, id_c)); conn.commit(); return True
     except: return False
     finally: conn.close()
 
 def eliminar_cliente(id_c):
     conn = get_db_connection(); cursor = conn.cursor()
     try:
-        cursor.execute("UPDATE ventas SET cliente_id = NULL WHERE cliente_id = %s", (id_c,))
-        cursor.execute("DELETE FROM clientes WHERE id = %s", (id_c,))
+        cursor.execute("UPDATE ventas SET cliente_id=NULL WHERE cliente_id=%s", (id_c,))
+        cursor.execute("DELETE FROM clientes WHERE id=%s", (id_c,))
         conn.commit(); return True
     except: return False
     finally: conn.close()
-
-# ==========================================
-#      FINANZAS (Recuperado)
-# ==========================================
 
 def obtener_resumen_finanzas():
     conn = get_db_connection()
@@ -303,103 +276,63 @@ def obtener_resumen_finanzas():
     except: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     finally: conn.close()
 
-def actualizar_saldo_inicial(cuenta, monto):
+def actualizar_saldo_inicial(c, m):
     conn = get_db_connection(); cursor = conn.cursor()
-    try: cursor.execute("UPDATE saldos_iniciales SET monto=%s WHERE cuenta=%s", (monto, cuenta)); conn.commit(); return True
+    try: cursor.execute("UPDATE saldos_iniciales SET monto=%s WHERE cuenta=%s", (m, c)); conn.commit(); return True
     except: return False
     finally: conn.close()
 
-# ==========================================
-#      TRANSACCIONES (Restauradas y Mejoradas)
-# ==========================================
-
-def crear_producto(nombre, costo, precio):
-    conn = get_db_connection(); cursor=conn.cursor()
-    try: cursor.execute("INSERT INTO productos (nombre, costo, precio, activo) VALUES (%s, %s, %s, 1)", (nombre, costo, precio)); conn.commit(); return True
-    except: return False
-    finally: conn.close()
-
-def crear_variante(prod, var):
-    conn = get_db_connection(); cursor=conn.cursor()
-    try: cursor.execute("INSERT INTO variantes (producto_nombre, nombre_variante) VALUES (%s, %s)", (prod, var)); conn.commit(); return True, "Ok"
-    except Exception as e: return False, str(e)
-    finally: conn.close()
-
+# --- 6. TRANSACCIONES ---
 def registrar_venta(producto, variante, cantidad, precio, metodo, ubicacion, notas, cliente_id):
     conn = get_db_connection(); cursor=conn.cursor()
     try:
         cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (cantidad, producto, variante, ubicacion))
-        sql = "INSERT INTO ventas (fecha, producto, variante, cantidad, precio_unitario, total, metodo_pago, ubicacion, notas, cliente_id) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-        cursor.execute(sql, (producto, variante, cantidad, precio, precio*cantidad, metodo, ubicacion, notas, cliente_id))
+        cursor.execute("INSERT INTO ventas (fecha, producto, variante, cantidad, precio_unitario, total, metodo_pago, ubicacion, notas, cliente_id) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s)", (producto, variante, cantidad, precio, precio*cantidad, metodo, ubicacion, notas, cliente_id))
         conn.commit(); return True
-    except Exception as e: print(e); return False
+    except: return False
     finally: conn.close()
 
 def registrar_compra(producto, variante, cantidad, costo, proveedor, metodo, ubicacion, notas):
     conn = get_db_connection(); cursor=conn.cursor()
     try:
-        sql_st = "INSERT INTO inventario (producto_nombre, sucursal_nombre, variante, cantidad) VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad = cantidad + %s"
-        cursor.execute(sql_st, (producto, ubicacion, variante, cantidad, cantidad))
-        sql = "INSERT INTO compras (fecha, producto, variante, cantidad, costo_total, proveedor, metodo_pago, ubicacion, notas) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s)"
-        cursor.execute(sql, (producto, variante, cantidad, costo, proveedor, metodo, ubicacion, notas))
+        cursor.execute("INSERT INTO inventario (producto_nombre, sucursal_nombre, variante, cantidad) VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad = cantidad + %s", (producto, ubicacion, variante, cantidad, cantidad))
+        cursor.execute("INSERT INTO compras (fecha, producto, variante, cantidad, costo_total, proveedor, metodo_pago, ubicacion, notas) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s)", (producto, variante, cantidad, costo, proveedor, metodo, ubicacion, notas))
         conn.commit(); return True
     except: return False
     finally: conn.close()
 
-def eliminar_venta(id_venta, datos):
+def eliminar_venta(id_v, d):
     conn = get_db_connection(); cursor = conn.cursor()
     try:
-        cant = int(datos['CANTIDAD']); prod = str(datos['PRODUCTO']); ubic = str(datos['UBICACION']); var = str(datos.get('VARIANTE', '')) 
-        cursor.execute("UPDATE inventario SET cantidad = cantidad + %s WHERE producto_nombre = %s AND variante = %s AND sucursal_nombre = %s", (cant, prod, var, ubic))
-        cursor.execute("DELETE FROM ventas WHERE id = %s", (id_venta,))
+        cursor.execute("UPDATE inventario SET cantidad = cantidad + %s WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (int(d['CANTIDAD']), str(d['PRODUCTO']), str(d.get('VARIANTE','')), str(d['UBICACION'])))
+        cursor.execute("DELETE FROM ventas WHERE id=%s", (id_v,))
         conn.commit(); return True
     except: return False
     finally: conn.close()
 
-def eliminar_compra(id_c, datos):
+def eliminar_compra(id_c, d):
     conn = get_db_connection(); cursor = conn.cursor()
     try:
-        cant = int(datos['CANTIDAD']); prod = str(datos['PRODUCTO']); ubic = str(datos['UBICACION']); var = str(datos.get('VARIANTE', ''))
-        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre = %s AND variante = %s AND sucursal_nombre = %s", (cant, prod, var, ubic))
-        cursor.execute("DELETE FROM compras WHERE id = %s", (id_c,))
+        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (int(d['CANTIDAD']), str(d['PRODUCTO']), str(d.get('VARIANTE','')), str(d['UBICACION'])))
+        cursor.execute("DELETE FROM compras WHERE id=%s", (id_c,))
         conn.commit(); return True
     except: return False
     finally: conn.close()
 
-# --- EDICIÓN DE VENTAS (NECESARIO PARA TU BOTÓN DE EDITAR) ---
-def obtener_venta_por_id(id_venta):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM ventas WHERE id = %s", (id_venta,))
-        return cursor.fetchone()
+def obtener_venta_por_id(id_v):
+    conn = get_db_connection(); cursor = conn.cursor(dictionary=True)
+    try: cursor.execute("SELECT * FROM ventas WHERE id=%s", (id_v,)); return cursor.fetchone()
     finally: conn.close()
 
-def actualizar_venta(id_venta, nueva_cant, nuevo_precio, nuevo_metodo, nuevas_notas):
+def actualizar_venta(id_v, nc, np, nm, nn):
     conn = get_db_connection(); cursor = conn.cursor()
     try:
-        cursor.execute("SELECT producto, variante, sucursal_nombre, cantidad, ubicacion FROM ventas WHERE id = %s", (id_venta,))
+        cursor.execute("SELECT producto, variante, sucursal_nombre, cantidad FROM ventas WHERE id=%s", (id_v,))
         row = cursor.fetchone()
-        if not row: return False, "Venta no encontrada"
-        
-        prod, var, _, old_cant, suc = row
-        var = var if var else ""
-        diferencia = nueva_cant - old_cant
-        
-        if diferencia > 0:
-            cursor.execute("SELECT cantidad FROM inventario WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (prod, var, suc))
-            stock_res = cursor.fetchone()
-            stock_actual = stock_res[0] if stock_res else 0
-            if stock_actual < diferencia: return False, f"Sin stock suficiente."
-
-        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (diferencia, prod, var, suc))
-        nuevo_total = nueva_cant * nuevo_precio
-        sql_update = "UPDATE ventas SET cantidad=%s, precio_unitario=%s, total=%s, metodo_pago=%s, notas=%s WHERE id=%s"
-        cursor.execute(sql_update, (nueva_cant, nuevo_precio, nuevo_total, nuevo_metodo, nuevas_notas, id_venta))
-        
-        conn.commit()
-        return True, "Venta actualizada."
-    except Exception as e:
-        conn.rollback()
-        return False, str(e)
+        if not row: return False, "No existe"
+        diff = nc - row[3]
+        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (diff, row[0], row[1] if row[1] else '', row[2]))
+        cursor.execute("UPDATE ventas SET cantidad=%s, precio_unitario=%s, total=%s, metodo_pago=%s, notas=%s WHERE id=%s", (nc, np, nc*np, nm, nn, id_v))
+        conn.commit(); return True, "Ok"
+    except Exception as e: return False, str(e)
     finally: conn.close()

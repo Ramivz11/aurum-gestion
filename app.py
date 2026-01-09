@@ -240,9 +240,7 @@ elif menu == "Movimientos":
     
     # Mostrar tabla con variante si existe
     if 'VARIANTE' in df_show.columns:
-        # Crear columna visual combinada
         df_show['PRODUCTO_FULL'] = df_show.apply(lambda x: f"{x['PRODUCTO']} {('| ' + x['VARIANTE']) if x['VARIANTE'] else ''}", axis=1)
-        # Reordenar para ver mejor
         cols = ['ID', 'FECHA', 'PRODUCTO_FULL', 'CANTIDAD', 'UBICACION']
         if tipo_mov == "Ventas": cols += ['TOTAL', 'METODO PAGO', 'CLIENTE_ID']
         else: cols += ['COSTO', 'PROVEEDOR']
@@ -252,101 +250,199 @@ elif menu == "Movimientos":
 
     st.divider()
     
-    # Eliminación
-    st.subheader("🗑️ Eliminar Registro")
+    # --- ZONA DE ACCIONES (EDITAR / ELIMINAR) ---
+    st.subheader("🛠️ Gestionar Registros")
+    
+    col_sel, col_act = st.columns([2, 1])
+    
+    # Selector de Registro
     opciones = []
     if not df_show.empty:
-        opciones = df_show.apply(lambda x: f"ID {x['ID']} | {x['PRODUCTO']} {x.get('VARIANTE','')} | {x['FECHA']}", axis=1).tolist()
+        # Creamos una lista legible para el selectbox
+        opciones = df_show.apply(lambda x: f"ID {x['ID']} | {x['PRODUCTO']} ({x['CANTIDAD']} u.) | {str(x['FECHA'])}", axis=1).tolist()
     
-    sel_del = st.selectbox(f"Seleccionar {tipo_mov}:", options=opciones)
-    if sel_del:
-        id_del = int(sel_del.split(" | ")[0].replace("ID ", ""))
-        if st.button("ELIMINAR DEFINITIVAMENTE", type="primary"):
-            row_del = df_show[df_show['ID'] == id_del].iloc[0]
+    sel_registro = col_sel.selectbox(f"Seleccionar {tipo_mov}:", options=opciones)
+    
+    if sel_registro:
+        # Extraer ID del string seleccionado
+        id_sel = int(sel_registro.split(" | ")[0].replace("ID ", ""))
+        
+        tab_edit, tab_del = col_act.tabs(["✏️ Editar", "🗑️ Eliminar"])
+        
+        # A) EDITAR (Solo implementado para Ventas en este ejemplo)
+        with tab_edit:
             if tipo_mov == "Ventas":
-                if db.eliminar_venta(id_del, row_del): st.success("Eliminado"); time.sleep(1); st.rerun()
+                datos_old = db.obtener_venta_por_id(id_sel)
+                if datos_old:
+                    with st.form("form_edit_venta"):
+                        st.caption(f"Editando: {datos_old['producto']}")
+                        e_cant = st.number_input("Cantidad", value=int(datos_old['cantidad']), min_value=1)
+                        e_precio = st.number_input("Precio Unit.", value=float(datos_old['precio_unitario']), min_value=0.0)
+                        e_metodo = st.selectbox("Pago", ["Efectivo", "Transferencia"], index=0 if datos_old['metodo_pago']=="Efectivo" else 1)
+                        e_notas = st.text_input("Notas", value=datos_old['notas'] if datos_old['notas'] else "")
+                        
+                        if st.form_submit_button("Guardar Cambios"):
+                            ok, msg = db.actualizar_venta(id_sel, e_cant, e_precio, e_metodo, e_notas)
+                            if ok:
+                                st.success(msg)
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(msg)
             else:
-                if db.eliminar_compra(id_del, row_del): st.success("Eliminado"); time.sleep(1); st.rerun()
+                st.info("La edición de Compras se puede agregar si la necesitas.")
 
-# --- 4. STOCK ---
+        # B) ELIMINAR
+        with tab_del:
+            st.write("¿Borrar permanentemente?")
+            if st.button("CONFIRMAR ELIMINACIÓN", type="primary"):
+                # Obtenemos la fila del dataframe original para pasar los datos a la función eliminar
+                row_del = df_show[df_show['ID'] == id_sel].iloc[0]
+                
+                if tipo_mov == "Ventas":
+                    if db.eliminar_venta(id_sel, row_del): 
+                        st.success("Venta eliminada y stock devuelto.")
+                        time.sleep(1); st.rerun()
+                else:
+                    if db.eliminar_compra(id_sel, row_del): 
+                        st.success("Compra eliminada y stock descontado.")
+                        time.sleep(1); st.rerun()
+
+# --- 4. STOCK (RENOVADO) ---
 elif menu == "Stock":
-    st.title("📦 Gestión de Productos e Inventario")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Ver Inventario", "➕ Nuevo Producto", "🎨 Agregar Variantes", "✏️ Editar Producto", "📄 Reporte PDF"])
+    st.title("📦 Gestión de Inventario Flexible")
     
-    with tab1:
-        st.subheader("📋 Inventario Global")
-        busqueda = st.text_input("🔍 Filtrar por Producto", placeholder="Ej: Star Proteina")
-        if not df_prod.empty:
-            df_show = df_prod.copy()
-            if busqueda:
-                for palabra in busqueda.split():
-                    df_show = df_show[df_show['Nombre'].str.contains(palabra, case=False, regex=False, na=False)]
-            st.dataframe(df_show, use_container_width=True, hide_index=True)
-            st.caption(f"Resultados: {len(df_show)}")
+    # Obtenemos los datos en formato "Matriz" para editar
+    df_matrix, lista_sucursales = db.obtener_datos_matrix()
+    
+    tab_editor, tab_avanzado, tab_nuevo = st.tabs(["📦 Stock", "🛠️ Gestión Variantes / Bajas", "➕ Nuevo Producto"])
+
+    # --- TAB 1: EDITOR TIPO EXCEL ---
+    with tab_editor:
+        st.caption("Modifica precios, costos y stock directamente en las celdas. Los cambios se guardan al pulsar el botón.")
+        
+        if not df_matrix.empty:
+            # Configuración de columnas para el editor
+            column_config = {
+                "Producto": st.column_config.TextColumn("Producto", disabled=True), # Bloqueamos nombre para no romper integridad
+                "Variante": st.column_config.TextColumn("Variante", disabled=True), # Bloqueamos variante aquí
+                "Costo": st.column_config.NumberColumn("Costo ($)", min_value=0, format="$%d"),
+                "Precio": st.column_config.NumberColumn("Precio ($)", min_value=0, format="$%d"),
+            }
+            # Configurar columnas dinámicas de sucursales
+            for suc in lista_sucursales:
+                column_config[suc] = st.column_config.NumberColumn(f"Stock {suc}", min_value=0, step=1, format="%d u.")
+
+            # EDITOR DE DATOS
+            df_editado = st.data_editor(
+                df_matrix,
+                column_config=column_config,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed", # No permitir agregar filas aquí, usar pestaña "Nuevo"
+                key="editor_stock"
+            )
+
+            # Botón de guardado
+            st.write("")
+            col_save, col_info = st.columns([1, 4])
+            if col_save.button("💾 GUARDAR CAMBIOS", type="primary"):
+                if db.guardar_cambios_masivos(df_editado, lista_sucursales):
+                    st.success("✅ ¡Base de datos actualizada!")
+                    time.sleep(1)
+                    st.rerun()
         else:
-            st.info("No hay productos.")
+            st.info("No hay productos activos. Ve a 'Nuevo Producto'.")
 
-    with tab2:
-        st.subheader("Nuevo Producto Base")
-        with st.form("alta_producto"):
-            nombre_nuevo = st.text_input("Nombre (Sin sabor)").upper()
-            c1, c2 = st.columns(2)
-            costo_nuevo = c1.number_input("Costo", min_value=0.0)
-            precio_nuevo = c2.number_input("Precio", min_value=0.0)
-            if st.form_submit_button("Guardar"):
-                if nombre_nuevo and db.crear_producto(nombre_nuevo, costo_nuevo, precio_nuevo):
-                    st.success("Creado!"); time.sleep(1); st.rerun()
+    # --- TAB 2: GESTIÓN AVANZADA (Variantes y Bajas) ---
+    with tab_avanzado:
+        c1, c2 = st.columns(2)
+        
+        # A. RENOMBRAR VARIANTE
+        with c1:
+            st.subheader("🏷️ Renombrar Variante")
+            all_prods, _ = db.obtener_listas_auxiliares()
+            p_sel = st.selectbox("Producto", all_prods, key="sel_renom_prod")
+            
+            if p_sel:
+                vars_exist = db.obtener_variantes_de_producto(p_sel)
+                if vars_exist:
+                    v_old = st.selectbox("Variante actual", vars_exist)
+                    v_new_name = st.text_input("Nuevo nombre")
+                    if st.button("Renombrar"):
+                        ok, msg = db.renombrar_variante(p_sel, v_old, v_new_name)
+                        if ok: st.success("Variante renombrada!"); time.sleep(1); st.rerun()
+                        else: st.error(msg)
+                else:
+                    st.info("Este producto no tiene variantes.")
 
-    with tab3:
-        st.subheader("🎨 Crear Sabores / Variantes")
-        st.info("Agrega variantes a tus productos existentes (Ej: Chocolate, Vainilla).")
-        if not df_prod.empty:
-            # Filtramos solo nombres base
-            nombres_base = sorted(list(set([n.split(' | ')[0] for n in df_prod['Nombre'].unique()])))
-            with st.form("form_variante"):
-                prod_padre = st.selectbox("Seleccionar Producto Base", nombres_base)
-                nombre_var = st.text_input("Nombre de la Variante (Ej: Frutilla)")
-                if st.form_submit_button("➕ Agregar Variante"):
-                    ok, msg = db.crear_variante(prod_padre, nombre_var.strip())
-                    if ok:
-                        st.success(f"¡{nombre_var} agregado!"); time.sleep(1); st.rerun()
+        # B. MOVER STOCK
+        with c2:
+            st.subheader("📦 Mover Stock (Corrección)")
+            st.caption("Si asignaste stock a la variante equivocada.")
+            
+            # Reutilizamos p_sel
+            if p_sel:
+                suc_mov = st.selectbox("Sucursal", lista_sucursales, key="suc_mov")
+                
+                vars_mov = ["(Base / Sin Variante)"] + db.obtener_variantes_de_producto(p_sel)
+                
+                c2a, c2b = st.columns(2)
+                v_orig = c2a.selectbox("Desde (Origen)", vars_mov)
+                v_dest = c2b.selectbox("Hacia (Destino)", vars_mov, index=1 if len(vars_mov)>1 else 0)
+                
+                qty_mov = st.number_input("Cantidad a mover", min_value=1)
+                
+                if st.button("Mover Stock"):
+                    # Limpieza de nombres para base de datos
+                    vo_clean = "" if "Base" in v_orig else v_orig
+                    vd_clean = "" if "Base" in v_dest else v_dest
+                    
+                    if vo_clean == vd_clean:
+                        st.error("Origen y destino son iguales.")
                     else:
-                        st.error(msg)
-        else:
-            st.warning("Carga productos primero.")
+                        if db.mover_stock_entre_variantes(p_sel, suc_mov, vo_clean, vd_clean, qty_mov):
+                            st.success("Stock movido correctamente.")
+                            time.sleep(1); st.rerun()
 
-    with tab4:
-        st.subheader("Editar Producto Base")
-        if not df_prod.empty:
-            prod_edit = st.selectbox("Seleccionar", sorted(df_prod['Nombre'].unique()))
-            datos = df_prod[df_prod['Nombre'] == prod_edit].iloc[0]
-            with st.form("edit_prod"):
-                nn = st.text_input("Nombre", value=datos['Nombre'])
-                ce1, ce2 = st.columns(2)
-                nc = ce1.number_input("Costo", value=float(datos['Costo']))
-                np = ce2.number_input("Precio", value=float(datos['Precio']))
-                if st.form_submit_button("Actualizar"):
-                    if db.actualizar_producto(prod_edit, nn, nc, np):
-                        st.success("Actualizado!"); time.sleep(1); st.rerun()
+        st.divider()
+        
+        # C. ELIMINAR PRODUCTO (BORRADO LÓGICO)
+        st.subheader("🗑️ Eliminar Producto")
+        st.caption("El producto dejará de aparecer en ventas, pero el historial se mantiene.")
+        
+        prod_del = st.selectbox("Seleccionar Producto a Eliminar", all_prods, key="del_prod")
+        if st.button("❌ Eliminar Producto", type="secondary"):
+            if db.borrado_logico_producto(prod_del):
+                st.success(f"Producto '{prod_del}' eliminado (archivado).")
+                time.sleep(1); st.rerun()
+            else:
+                st.error("Error al eliminar.")
 
-    with tab5:
-        st.subheader("Reporte PDF")
-        if sucursales:
-            suc_pdf = st.selectbox("Sucursal:", sucursales, key="s_pdf")
-            if st.button("Descargar PDF"):
-                col_s = f"Stock_{suc_pdf}"
-                if col_s in df_prod.columns:
-                    df_r = df_prod[df_prod[col_s] > 0][['Nombre', col_s]].copy()
-                    if not df_r.empty:
-                        pdf = FPDF()
-                        pdf.add_page(); pdf.set_font('Arial', 'B', 16); pdf.cell(0,10,f"Stock: {suc_pdf}",0,1,'C')
-                        pdf.ln(5); pdf.set_font('Arial', '', 12)
-                        for _, r in df_r.iterrows():
-                            pdf.cell(140, 10, str(r['Nombre']).encode('latin-1','replace').decode('latin-1'), 1)
-                            pdf.cell(40, 10, str(int(r[col_s])), 1, 1, 'C')
-                        st.download_button("⬇️ PDF", pdf.output(dest='S').encode('latin-1'), f"Stock_{suc_pdf}.pdf", "application/pdf")
-                    else: st.warning("Sin stock.")
+    # --- TAB 3: NUEVO PRODUCTO ---
+    with tab_nuevo:
+        st.subheader("Alta de Producto")
+        with st.form("alta_prod_v2"):
+            np_nombre = st.text_input("Nombre del Producto (Ej: PROTEINA STAR)").upper()
+            c_np1, c_np2 = st.columns(2)
+            np_costo = c_np1.number_input("Costo", min_value=0.0)
+            np_precio = c_np2.number_input("Precio", min_value=0.0)
+            
+            st.markdown("**Variantes Iniciales (Opcional)**")
+            np_vars = st.text_input("Separa por comas (Ej: Chocolate, Vainilla, Frutilla)")
+            
+            if st.form_submit_button("Guardar Nuevo Producto"):
+                if db.crear_producto(np_nombre, np_costo, np_precio):
+                    # Si puso variantes, las creamos
+                    if np_vars:
+                        lista_v = [v.strip() for v in np_vars.split(',') if v.strip()]
+                        for v in lista_v:
+                            db.crear_variante(np_nombre, v)
+                    st.success("¡Producto Creado!"); time.sleep(1); st.rerun()
+                else:
+                    st.error("Error: Probablemente el nombre ya existe.")
 
+# ... (resto de las secciones igual) ...
 # --- 5. CLIENTES ---
 elif menu == "Clientes":
     st.title("👥 Gestión de Clientes")
@@ -386,38 +482,112 @@ elif menu == "Clientes":
                 if st.button("❌ Eliminar Cliente"):
                     if db.eliminar_cliente(id_e): st.success("Eliminado"); time.sleep(1); st.rerun()
 
-# --- 6. FINANZAS ---
+# --- 6. FINANZAS (MEJORADO) ---
 elif menu == "Finanzas":
-    st.title("💰 Finanzas")
-    df_v, df_c, df_s = db.obtener_resumen_finanzas()
+    st.title("💰 Tablero Financiero")
     
-    def get_tot(df, met): 
-        val = df.loc[df['metodo_pago'] == met, 'total'] if not df.empty else pd.Series([0])
-        return float(val.iloc[0]) if not val.empty else 0.0
-
-    ve, vt = get_tot(df_v, 'Efectivo'), get_tot(df_v, 'Transferencia')
-    ce, ct = get_tot(df_c, 'Efectivo'), get_tot(df_c, 'Transferencia')
+    tab1, tab2 = st.tabs(["💵 Flujo de Caja (Caja/Banco)", "📦 Valorización de Stock"])
     
-    be, bt = 0.0, 0.0
-    if not df_s.empty:
-        re = df_s[df_s['cuenta']=='Efectivo']
-        rt = df_s[df_s['cuenta']=='Transferencia']
-        if not re.empty: be = float(re.iloc[0]['monto'])
-        if not rt.empty: bt = float(rt.iloc[0]['monto'])
+    # --- TAB 1: CAJA Y BANCO (Lo que ya tenías restaurado) ---
+    with tab1:
+        st.subheader("Disponibilidad Actual")
+        df_v, df_c, df_s = db.obtener_resumen_finanzas()
         
-    fin_e, fin_t = (be + ve - ce), (bt + vt - ct)
-    
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Caja Efectivo", f"${fin_e:,.0f}")
-    k2.metric("Banco", f"${fin_t:,.0f}")
-    k3.metric("Total Líquido", f"${(fin_e + fin_t):,.0f}")
-    
-    st.divider()
-    with st.expander("Calibrar Saldos"):
-        with st.form("calib"):
-            n_e = st.number_input("Efectivo Real", value=fin_e)
-            n_t = st.number_input("Banco Real", value=fin_t)
-            if st.form_submit_button("Ajustar"):
-                db.actualizar_saldo_inicial('Efectivo', n_e - ve + ce)
-                db.actualizar_saldo_inicial('Transferencia', n_t - vt + ct)
-                st.rerun()
+        def get_tot(df, met): 
+            val = df.loc[df['metodo_pago'] == met, 'total'] if not df.empty else pd.Series([0])
+            return float(val.iloc[0]) if not val.empty else 0.0
+
+        # Totales Históricos
+        ve, vt = get_tot(df_v, 'Efectivo'), get_tot(df_v, 'Transferencia')
+        ce, ct = get_tot(df_c, 'Efectivo'), get_tot(df_c, 'Transferencia')
+        
+        # Saldos Iniciales
+        be, bt = 0.0, 0.0
+        if not df_s.empty:
+            re = df_s[df_s['cuenta']=='Efectivo']
+            rt = df_s[df_s['cuenta']=='Transferencia']
+            if not re.empty: be = float(re.iloc[0]['monto'])
+            if not rt.empty: bt = float(rt.iloc[0]['monto'])
+            
+        fin_e = (be + ve - ce)
+        fin_t = (bt + vt - ct)
+        
+        # Tarjetas Métricas
+        k1, k2, k3 = st.columns(3)
+        k1.metric("💵 EFECTIVO", f"${fin_e:,.0f}", delta=f"Ingresos: ${ve:,.0f}")
+        k2.metric("🏦 MERCADO PAGO", f"${fin_t:,.0f}", delta=f"Ingresos: ${vt:,.0f}")
+        k3.metric("💰 Total Líquido", f"${(fin_e + fin_t):,.0f}")
+        
+        st.divider()
+        
+        with st.expander("⚙️ Ajustar Saldos Iniciales"):
+            st.caption("Usa esto si el monto real no coincide con el sistema.")
+            with st.form("calib"):
+                n_e = st.number_input("Efectivo Real en Mano", value=fin_e)
+                n_t = st.number_input("Saldo Real en Banco", value=fin_t)
+                if st.form_submit_button("Guardar Ajuste"):
+                    # Calculamos el saldo inicial necesario para llegar a ese número
+                    # Formula: Saldo_Ini = Real - Ventas + Compras
+                    nuevo_be = n_e - ve + ce
+                    nuevo_bt = n_t - vt + ct
+                    
+                    db.actualizar_saldo_inicial('Efectivo', nuevo_be)
+                    db.actualizar_saldo_inicial('Transferencia', nuevo_bt)
+                    st.success("Saldos recalibrados.")
+                    time.sleep(1)
+                    st.rerun()
+
+    # --- TAB 2: VALORIZACIÓN DE STOCK (NUEVO) ---
+    with tab2:
+        st.subheader("Activos en Mercadería")
+        
+        # Usamos la matriz para calcular todo en tiempo real
+        df_matrix, sucursales = db.obtener_datos_matrix()
+        
+        if not df_matrix.empty and sucursales:
+            # 1. Calcular Stock Total por producto (Suma de sucursales)
+            df_matrix['stock_total'] = df_matrix[sucursales].sum(axis=1)
+            
+            # 2. Filtrar solo lo que tiene stock > 0
+            df_con_stock = df_matrix[df_matrix['stock_total'] > 0].copy()
+            
+            if not df_con_stock.empty:
+                # 3. Cálculos Financieros
+                df_con_stock['val_costo'] = df_con_stock['stock_total'] * df_con_stock['Costo']
+                df_con_stock['val_venta'] = df_con_stock['stock_total'] * df_con_stock['Precio']
+                df_con_stock['ganancia_pot'] = df_con_stock['val_venta'] - df_con_stock['val_costo']
+                
+                total_costo = df_con_stock['val_costo'].sum()
+                total_venta = df_con_stock['val_venta'].sum()
+                total_ganancia = df_con_stock['ganancia_pot'].sum()
+                margen_promedio = (total_ganancia / total_costo * 100) if total_costo > 0 else 0
+                
+                # Métricas Principales
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Costo Total Stock", f"${total_costo:,.0f}", help="Dinero invertido en mercadería hoy.")
+                m2.metric("Valor Precio Venta", f"${total_venta:,.0f}", help="Si vendieras todo hoy a precio de lista.")
+                m3.metric("Ganancia Potencial", f"${total_ganancia:,.0f}", delta=f"{margen_promedio:.1f}% Margen")
+                
+                st.divider()
+                st.write("🔎 **Detalle por Producto**")
+                
+                # Tabla bonita para ver dónde está la plata
+                df_view = df_con_stock[['Producto', 'Variante', 'stock_total', 'Costo', 'Precio', 'val_costo', 'ganancia_pot']].sort_values(by='val_costo', ascending=False)
+                
+                # Formateo visual
+                st.dataframe(
+                    df_view,
+                    column_config={
+                        "stock_total": st.column_config.NumberColumn("Cant.", format="%d"),
+                        "val_costo": st.column_config.NumberColumn("Inversión ($)", format="$%d"),
+                        "ganancia_pot": st.column_config.NumberColumn("Ganancia ($)", format="$%d"),
+                        "Costo": st.column_config.NumberColumn("Costo U.", format="$%d"),
+                        "Precio": st.column_config.NumberColumn("Precio U.", format="$%d"),
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No tienes mercadería en stock actualmente.")
+        else:
+            st.warning("No hay productos cargados o sucursales configuradas.")

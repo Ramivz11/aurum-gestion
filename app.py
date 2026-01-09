@@ -354,70 +354,64 @@ elif menu == "Stock":
         else:
             st.info("No hay productos activos. Ve a 'Nuevo Producto'.")
 
-    # --- TAB 2: GESTIÓN AVANZADA (Variantes y Bajas) ---
+# --- TAB 2: GESTIÓN AVANZADA (Variantes y Bajas) ---
     with tab_avanzado:
+        # 1. RECUPERAR DATOS: Obtenemos AMBAS listas (Sucursales y Productos)
+        sucs_list, all_prods = db.obtener_listas_auxiliares()
+        
+        # --- SECCIÓN A: CREAR NUEVA VARIANTE ---
+        st.subheader("🎨 Agregar Variantes")
+        with st.form("form_add_variante_new"):
+            c_add1, c_add2 = st.columns([2, 2])
+            prod_add = c_add1.selectbox("Seleccionar Producto", all_prods, key="sel_prod_add_var")
+            nombre_var = c_add2.text_input("Nombre de la Variante (Ej: Chocolate)")
+            
+            if st.form_submit_button("➕ Crear Variante"):
+                if prod_add and nombre_var:
+                    ok, msg = db.crear_variante(prod_add, nombre_var)
+                    if ok:
+                        st.success(f"Variante '{nombre_var}' agregada.")
+                        time.sleep(1); st.rerun()
+                    else: st.error(msg)
+                else: st.warning("Completa los campos.")
+        
+        st.divider()
+
+        # --- SECCIÓN B: HERRAMIENTAS DE CORRECCIÓN ---
+        st.subheader("🛠️ Herramientas de Corrección")
         c1, c2 = st.columns(2)
         
-        # A. RENOMBRAR VARIANTE
+        # B.1 RENOMBRAR VARIANTE
         with c1:
-            st.subheader("🏷️ Renombrar Variante")
-            all_prods, _ = db.obtener_listas_auxiliares()
-            p_sel = st.selectbox("Producto", all_prods, key="sel_renom_prod")
+            st.markdown("**🏷️ Renombrar Variante**")
+            p_renom = st.selectbox("Producto", all_prods, key="sel_prod_renom")
             
-            if p_sel:
-                vars_exist = db.obtener_variantes_de_producto(p_sel)
+            if p_renom:
+                vars_exist = db.obtener_variantes_de_producto(p_renom)
                 if vars_exist:
-                    v_old = st.selectbox("Variante actual", vars_exist)
-                    v_new_name = st.text_input("Nuevo nombre")
+                    v_old = st.selectbox("Variante actual", vars_exist, key="sel_var_old")
+                    v_new_name = st.text_input("Nuevo nombre", key="inp_var_new")
+                    
                     if st.button("Renombrar"):
-                        ok, msg = db.renombrar_variante(p_sel, v_old, v_new_name)
-                        if ok: st.success("Variante renombrada!"); time.sleep(1); st.rerun()
+                        ok, msg = db.renombrar_variante(p_renom, v_old, v_new_name)
+                        if ok: 
+                            st.success("¡Renombrado exitoso!")
+                            time.sleep(1); st.rerun()
                         else: st.error(msg)
                 else:
                     st.info("Este producto no tiene variantes.")
 
-        # B. MOVER STOCK
-        with c2:
-            st.subheader("📦 Mover Stock (Corrección)")
-            st.caption("Si asignaste stock a la variante equivocada.")
-            
-            # Reutilizamos p_sel
-            if p_sel:
-                suc_mov = st.selectbox("Sucursal", lista_sucursales, key="suc_mov")
-                
-                vars_mov = ["(Base / Sin Variante)"] + db.obtener_variantes_de_producto(p_sel)
-                
-                c2a, c2b = st.columns(2)
-                v_orig = c2a.selectbox("Desde (Origen)", vars_mov)
-                v_dest = c2b.selectbox("Hacia (Destino)", vars_mov, index=1 if len(vars_mov)>1 else 0)
-                
-                qty_mov = st.number_input("Cantidad a mover", min_value=1)
-                
-                if st.button("Mover Stock"):
-                    # Limpieza de nombres para base de datos
-                    vo_clean = "" if "Base" in v_orig else v_orig
-                    vd_clean = "" if "Base" in v_dest else v_dest
-                    
-                    if vo_clean == vd_clean:
-                        st.error("Origen y destino son iguales.")
-                    else:
-                        if db.mover_stock_entre_variantes(p_sel, suc_mov, vo_clean, vd_clean, qty_mov):
-                            st.success("Stock movido correctamente.")
-                            time.sleep(1); st.rerun()
-
         st.divider()
         
-        # C. ELIMINAR PRODUCTO (BORRADO LÓGICO)
-        st.subheader("🗑️ Eliminar Producto")
-        st.caption("El producto dejará de aparecer en ventas, pero el historial se mantiene.")
-        
-        prod_del = st.selectbox("Seleccionar Producto a Eliminar", all_prods, key="del_prod")
-        if st.button("❌ Eliminar Producto", type="secondary"):
-            if db.borrado_logico_producto(prod_del):
-                st.success(f"Producto '{prod_del}' eliminado (archivado).")
-                time.sleep(1); st.rerun()
-            else:
-                st.error("Error al eliminar.")
+        # --- SECCIÓN C: ELIMINAR PRODUCTO ---
+        with st.expander("🗑️ Zona de Peligro: Eliminar Producto"):
+            st.warning("El producto dejará de aparecer en las listas.")
+            prod_del = st.selectbox("Producto a Eliminar", all_prods, key="del_prod_unique")
+            
+            if st.button("Confirmar Eliminación", type="primary"):
+                if db.borrado_logico_producto(prod_del):
+                    st.success(f"'{prod_del}' eliminado.")
+                    time.sleep(1); st.rerun()
 
     # --- TAB 3: NUEVO PRODUCTO ---
     with tab_nuevo:

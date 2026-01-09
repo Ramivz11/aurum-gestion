@@ -4,7 +4,85 @@ import time
 import database as db
 from datetime import datetime
 from fpdf import FPDF
+# --- PEGAR ESTO AL PRINCIPIO DE app.py ---
+import streamlit as st
+import database as db
 
+# ... tus imports ...
+
+# --- MIGRACIÓN DE EMERGENCIA ---
+def correr_migracion_nube():
+    conn = db.get_db_connection()
+    cursor = conn.cursor()
+    try:
+        st.write("🛠️ Iniciando actualización de estructura...")
+        
+        # 1. CREAR TABLA CLIENTES
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clientes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                nombre VARCHAR(255) NOT NULL UNIQUE,
+                ubicacion VARCHAR(100),
+                fecha_alta DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        st.write("✅ Tabla 'clientes' verificada.")
+
+        # 2. CLIENTE POR DEFECTO
+        cursor.execute("INSERT IGNORE INTO clientes (nombre, ubicacion) VALUES ('Consumidor Final', 'General')")
+        
+        # 3. ACTUALIZAR VENTAS (Agregar cliente_id)
+        try:
+            cursor.execute("ALTER TABLE ventas ADD COLUMN cliente_id INT DEFAULT NULL")
+            cursor.execute("SELECT id FROM clientes WHERE nombre = 'Consumidor Final'")
+            id_cf = cursor.fetchone()[0]
+            cursor.execute(f"UPDATE ventas SET cliente_id = {id_cf} WHERE cliente_id IS NULL")
+            st.write("✅ Tabla 'ventas' actualizada con clientes.")
+        except:
+            st.write("ℹ️ Columna cliente_id ya existía.")
+
+        # 4. CREAR TABLA VARIANTES (Para los sabores)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS variantes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                producto_nombre VARCHAR(255),
+                nombre_variante VARCHAR(100),
+                UNIQUE KEY unique_var (producto_nombre, nombre_variante)
+            );
+        """)
+        st.write("✅ Tabla 'variantes' verificada.")
+
+        # 5. ACTUALIZAR INVENTARIO (Agregar columna variante)
+        try:
+            cursor.execute("ALTER TABLE inventario ADD COLUMN variante VARCHAR(100) DEFAULT ''")
+            # Ajustar clave única para que soporte variantes
+            try:
+                cursor.execute("ALTER TABLE inventario DROP INDEX unique_stock")
+            except: pass
+            cursor.execute("ALTER TABLE inventario ADD UNIQUE KEY unique_stock_var (producto_nombre, sucursal_nombre, variante)")
+            st.write("✅ Tabla 'inventario' actualizada para variantes.")
+        except:
+            st.write("ℹ️ Columna variante ya existía en inventario.")
+
+        # 6. ACTUALIZAR HISTORIALES
+        try:
+            cursor.execute("ALTER TABLE ventas ADD COLUMN variante VARCHAR(100) DEFAULT ''")
+            cursor.execute("ALTER TABLE compras ADD COLUMN variante VARCHAR(100) DEFAULT ''")
+        except: pass
+
+        conn.commit()
+        st.success("🚀 ¡BASE DE DATOS ACTUALIZADA CON ÉXITO!")
+        
+    except Exception as e:
+        st.error(f"Error: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+# Botón temporal en la barra lateral
+if st.sidebar.button("⚠️ ACTUALIZAR DB NUBE"):
+    correr_migracion_nube()
+# ----------------------------------------
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Aurum Suplementos", page_icon="logo.png", layout="wide")
 st.sidebar.image("logo.png", width=200)
@@ -15,14 +93,16 @@ menu = st.sidebar.radio("MENÚ", ["Registrar Venta", "Registrar Compra", "Movimi
 # Carga inicial de datos (ahora recuperamos 4 variables)
 df_prod, sucursales, df_ventas, df_compras = db.obtener_datos_globales()
 
-# --- 1. REGISTRAR VENTA ---
+# --- 1. REGISTRAR VENTA (VERSIÓN FINAL: CLIENTES + VARIANTES) ---
 if menu == "Registrar Venta":
     st.title("💸 Nueva Venta")
     
     if not sucursales:
         st.warning("Carga sucursales en la base de datos primero.")
     else:
-        # --- LOGICA DE CLIENTES (Mantenemos lo anterior) ---
+        # ---------------------------------------------------------
+        # A) LÓGICA DE CLIENTES
+        # ---------------------------------------------------------
         lista_tuples = db.obtener_lista_clientes_simple()
         dict_clientes = {nombre: id_c for id_c, nombre in lista_tuples}
         nombres_ordenados = sorted(list(dict_clientes.keys()))
@@ -49,7 +129,7 @@ if menu == "Registrar Venta":
         cliente_sel = c1.selectbox("👤 Cliente", opciones_clientes, index=idx_defecto)
         suc_sel = c2.selectbox("Sucursal", sucursales)
 
-        # Creación rápida de cliente (igual que antes)
+        # Crear cliente rápido
         if cliente_sel == "➕ Nuevo Cliente":
             st.info("🆕 Creando cliente nuevo...")
             with st.form("form_rapido_cliente"):
@@ -61,67 +141,113 @@ if menu == "Registrar Venta":
                         if db.crear_cliente(new_nombre, new_ubicacion):
                             st.session_state["nuevo_cliente_creado"] = new_nombre
                             st.rerun()
+                        else:
+                            st.error("Error: Cliente ya existe.")
+                    else:
+                        st.error("Nombre obligatorio.")
             st.stop()
 
         cliente_id_final = dict_clientes.get(cliente_sel)
 
-        # --- SELECCIÓN DE PRODUCTO Y LÓGICA DE PRECIO DINÁMICO ---
-        prod_sel = st.selectbox("Producto", sorted(df_prod['Nombre'].unique()) if not df_prod.empty else [])
+        # ---------------------------------------------------------
+        # B) LÓGICA DE PRODUCTOS CON VARIANTE
+        # ---------------------------------------------------------
         
-        if prod_sel:
-            row_prod = df_prod[df_prod['Nombre'] == prod_sel].iloc[0]
-            precio_unitario_lista = float(row_prod['Precio'])
-            stock_disp = int(row_prod.get(f"Stock_{suc_sel}", 0))
+        # 1. Traemos el catálogo "expandido" (Producto + Variante)
+        df_catalogo = db.obtener_catalogo_venta() # Debe devolver [nombre, precio, nombre_variante]
+        
+        opciones_venta = []
+        mapa_datos = {} 
+        
+        if not df_catalogo.empty:
+            for _, row in df_catalogo.iterrows():
+                # Si tiene variante, mostramos "Producto | Sabor"
+                if row['nombre_variante']:
+                    etiqueta = f"{row['nombre']} | {row['nombre_variante']}"
+                    var_real = row['nombre_variante']
+                else:
+                    etiqueta = row['nombre']
+                    var_real = ""
+                
+                opciones_venta.append(etiqueta)
+                
+                # Guardamos la info real para usarla luego
+                mapa_datos[etiqueta] = {
+                    "base": row['nombre'],
+                    "variante": var_real,
+                    "precio": float(row['precio'])
+                }
+        
+        # Selectbox Buscador
+        prod_sel_txt = st.selectbox("Producto / Sabor", opciones_venta, index=None, placeholder="Escribe para buscar (ej: Star Choco)")
+        
+        if prod_sel_txt:
+            datos_prod = mapa_datos[prod_sel_txt]
             
-            # 1. Detectar si cambiamos de producto para resetear valores
-            # Si el usuario cambia de "Proteina" a "Creatina", reiniciamos cantidad a 1 y precio al de lista.
-            if "last_prod_v" not in st.session_state or st.session_state.last_prod_v != prod_sel:
-                st.session_state.last_prod_v = prod_sel
+            nombre_real = datos_prod['base']
+            variante_real = datos_prod['variante']
+            precio_lista = datos_prod['precio']
+            
+            # Consultar Stock (Ahora buscamos en df_prod que tiene claves combinadas "Nombre | Sabor")
+            # Nota: Asegúrate de que df_prod en database.py concatene nombre+variante
+            row_stock = df_prod[df_prod['Nombre'] == prod_sel_txt]
+            
+            if not row_stock.empty:
+                stock_disp = int(row_stock.iloc[0].get(f"Stock_{suc_sel}", 0))
+            else:
+                stock_disp = 0
+                
+            # --- C) PRECIO DINÁMICO ---
+            
+            # Resetear si cambia el producto
+            if "last_prod_v" not in st.session_state or st.session_state.last_prod_v != prod_sel_txt:
+                st.session_state.last_prod_v = prod_sel_txt
                 st.session_state.v_cant = 1
-                st.session_state.v_precio_total = precio_unitario_lista # Iniciamos con precio de 1 unidad
-                st.rerun() # Recargamos la app para aplicar los cambios
+                st.session_state.v_precio_total = precio_lista
+                st.rerun()
 
-            # 2. Función que actualiza el total cuando cambias la cantidad
             def actualizar_precio_total():
-                st.session_state.v_precio_total = st.session_state.v_cant * precio_unitario_lista
+                st.session_state.v_precio_total = st.session_state.v_cant * precio_lista
 
-            # Métricas informativas
             m1, m2 = st.columns(2)
-            m1.metric("Precio Unitario", f"${precio_unitario_lista:,.0f}")
+            m1.metric("Precio Unitario", f"${precio_lista:,.0f}")
             
             if stock_disp > 0:
                 m2.metric(f"Stock {suc_sel}", f"{stock_disp} u.", delta="Disponible")
             else:
                 m2.metric(f"Stock {suc_sel}", "❌ AGOTADO", delta="- Sin Stock", delta_color="inverse")
             
-            # --- FORMULARIO INTERACTIVO (Sin st.form) ---
             st.divider()
+            
             col_f1, col_f2 = st.columns(2)
-            
-            # Cantidad: Al cambiar, ejecuta 'actualizar_precio_total' automáticamente
             cant = col_f1.number_input("Cantidad", min_value=1, key="v_cant", on_change=actualizar_precio_total)
-            
-            # Precio Total: Se actualiza solo, pero permite edición manual (para descuentos)
             precio_total_final = col_f2.number_input("Precio Final Total ($)", min_value=0.0, key="v_precio_total")
             
             metodo = st.radio("Pago", ["Efectivo", "Transferencia"], horizontal=True)
             notas = st.text_input("Notas")
             
-            # Botón de Venta (fuera de formulario)
             if st.button("✅ REGISTRAR VENTA", type="primary", use_container_width=True):
                 if stock_disp < cant:
                     st.error("❌ Stock insuficiente.")
                 else:
-                    # Calculamos el precio unitario real para la base de datos
-                    # (Total / Cantidad = Unitario)
-                    precio_unitario_calculado = precio_total_final / cant
+                    precio_unitario_calc = precio_total_final / cant
                     
-                    if db.registrar_venta(prod_sel, cant, precio_unitario_calculado, metodo, suc_sel, notas, cliente_id_final):
-                        st.success(f"¡Venta registrada correctamente!")
+                    # Llamamos a registrar_venta con TODOS los argumentos nuevos
+                    exito = db.registrar_venta(
+                        producto=nombre_real, 
+                        variante=variante_real, 
+                        cantidad=cant, 
+                        precio=precio_unitario_calc, 
+                        metodo=metodo, 
+                        ubicacion=suc_sel, 
+                        notas=notas, 
+                        cliente_id=cliente_id_final
+                    )
+                    
+                    if exito:
+                        st.success(f"¡Venta de {prod_sel_txt} registrada!")
                         time.sleep(1)
-                        # Borramos la memoria del último producto para forzar reset en la próxima venta
-                        if "last_prod_v" in st.session_state:
-                            del st.session_state.last_prod_v
+                        if "last_prod_v" in st.session_state: del st.session_state.last_prod_v
                         st.rerun()
 
 # --- 2. REGISTRAR COMPRA ---

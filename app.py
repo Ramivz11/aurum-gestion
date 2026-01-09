@@ -225,88 +225,137 @@ elif menu == "Registrar Compra":
 # --- 3. MOVIMIENTOS ---
 elif menu == "Movimientos":
     st.title("📜 Historial de Transacciones")
-    tipo_mov = st.radio("Ver:", ["Ventas", "Compras"], horizontal=True)
     
-    fc1, fc2 = st.columns(2)
-    f_suc = fc1.selectbox("Filtrar Sucursal", ["Todas"] + sucursales)
+    # Filtros Superiores
+    c_filtro1, c_filtro2, c_filtro3 = st.columns([1, 2, 2])
+    tipo_mov = c_filtro1.radio("Ver:", ["Ventas", "Compras"], horizontal=True)
+    f_suc = c_filtro2.selectbox("Sucursal", ["Todas"] + sucursales)
+    f_prod = c_filtro3.text_input("Buscar Producto", placeholder="Ej: Proteína")
     
-    # Filtro producto simple
-    f_prod = fc2.text_input("Filtrar Producto (Texto)")
-    
+    # Obtener DataFrames
     df_show = df_ventas.copy() if tipo_mov == "Ventas" else df_compras.copy()
 
-    if f_suc != "Todas" and not df_show.empty: df_show = df_show[df_show['UBICACION'] == f_suc]
-    if f_prod and not df_show.empty: df_show = df_show[df_show['PRODUCTO'].str.contains(f_prod, case=False, na=False)]
+    # Aplicar Filtros
+    if f_suc != "Todas" and not df_show.empty: 
+        df_show = df_show[df_show['UBICACION'] == f_suc]
     
-    # Mostrar tabla con variante si existe
-    if 'VARIANTE' in df_show.columns:
-        df_show['PRODUCTO_FULL'] = df_show.apply(lambda x: f"{x['PRODUCTO']} {('| ' + x['VARIANTE']) if x['VARIANTE'] else ''}", axis=1)
+    if f_prod and not df_show.empty: 
+        df_show = df_show[df_show['PRODUCTO'].str.contains(f_prod, case=False, na=False)]
+    
+    # Mostrar Tabla Principal
+    st.markdown("### 📋 Listado")
+    if not df_show.empty:
+        # Formatear producto para mostrar variante
+        if 'VARIANTE' in df_show.columns:
+            df_show['PRODUCTO_FULL'] = df_show.apply(lambda x: f"{x['PRODUCTO']} {('| ' + x['VARIANTE']) if x['VARIANTE'] else ''}", axis=1)
+        else:
+            df_show['PRODUCTO_FULL'] = df_show['PRODUCTO']
+
+        # Columnas a mostrar
         cols = ['ID', 'FECHA', 'PRODUCTO_FULL', 'CANTIDAD', 'UBICACION']
         if tipo_mov == "Ventas": cols += ['TOTAL', 'METODO PAGO', 'CLIENTE_ID']
         else: cols += ['COSTO', 'PROVEEDOR']
+        
         st.dataframe(df_show[cols], use_container_width=True, hide_index=True)
     else:
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
+        st.info("No se encontraron movimientos con esos filtros.")
 
     st.divider()
     
-    # --- ZONA DE ACCIONES (EDITAR / ELIMINAR) ---
+    # --- ZONA DE GESTIÓN (EDITAR / ELIMINAR) ---
     st.subheader("🛠️ Gestionar Registros")
     
-    col_sel, col_act = st.columns([2, 1])
-    
-    # Selector de Registro
-    opciones = []
-    if not df_show.empty:
-        # Creamos una lista legible para el selectbox
-        opciones = df_show.apply(lambda x: f"ID {x['ID']} | {x['PRODUCTO']} ({x['CANTIDAD']} u.) | {str(x['FECHA'])}", axis=1).tolist()
-    
-    sel_registro = col_sel.selectbox(f"Seleccionar {tipo_mov}:", options=opciones)
-    
-    if sel_registro:
-        # Extraer ID del string seleccionado
-        id_sel = int(sel_registro.split(" | ")[0].replace("ID ", ""))
+    if df_show.empty:
+        st.warning("No hay registros visibles para gestionar.")
+    else:
+        col_sel, col_action = st.columns([1, 1])
         
-        tab_edit, tab_del = col_act.tabs(["✏️ Editar", "🗑️ Eliminar"])
+        # Selector de Registro (Dropdown con buscador)
+        # Creamos una lista de strings con ID y detalles para seleccionar fácil
+        opciones_select = df_show.apply(
+            lambda x: f"ID {x['ID']} | {x['PRODUCTO_FULL']} ({x['CANTIDAD']} u.) | {str(x['FECHA'])}", 
+            axis=1
+        ).tolist()
         
-        # A) EDITAR (Solo implementado para Ventas en este ejemplo)
-        with tab_edit:
-            if tipo_mov == "Ventas":
-                datos_old = db.obtener_venta_por_id(id_sel)
-                if datos_old:
-                    with st.form("form_edit_venta"):
-                        st.caption(f"Editando: {datos_old['producto']}")
-                        e_cant = st.number_input("Cantidad", value=int(datos_old['cantidad']), min_value=1)
-                        e_precio = st.number_input("Precio Unit.", value=float(datos_old['precio_unitario']), min_value=0.0)
-                        e_metodo = st.selectbox("Pago", ["Efectivo", "Transferencia"], index=0 if datos_old['metodo_pago']=="Efectivo" else 1)
-                        e_notas = st.text_input("Notas", value=datos_old['notas'] if datos_old['notas'] else "")
-                        
-                        if st.form_submit_button("Guardar Cambios"):
-                            ok, msg = db.actualizar_venta(id_sel, e_cant, e_precio, e_metodo, e_notas)
-                            if ok:
-                                st.success(msg)
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error(msg)
-            else:
-                st.info("La edición de Compras se puede agregar si la necesitas.")
-
-        # B) ELIMINAR
-        with tab_del:
-            st.write("¿Borrar permanentemente?")
-            if st.button("CONFIRMAR ELIMINACIÓN", type="primary"):
-                # Obtenemos la fila del dataframe original para pasar los datos a la función eliminar
-                row_del = df_show[df_show['ID'] == id_sel].iloc[0]
-                
+        sel_registro = col_sel.selectbox(f"Seleccionar {tipo_mov} a gestionar:", options=opciones_select)
+        
+        if sel_registro:
+            # Extraer ID del texto seleccionado "ID 123 | ..."
+            id_sel = int(sel_registro.split(" | ")[0].replace("ID ", ""))
+            
+            # Pestañas de Acción
+            tab_edit, tab_del = col_action.tabs(["✏️ Editar", "🗑️ Eliminar"])
+            
+# --- PESTAÑA EDITAR (ACTUALIZADA) ---
+            with tab_edit:
+                # A) EDICIÓN DE VENTAS
                 if tipo_mov == "Ventas":
-                    if db.eliminar_venta(id_sel, row_del): 
-                        st.success("Venta eliminada y stock devuelto.")
-                        time.sleep(1); st.rerun()
+                    datos_old = db.obtener_venta_por_id(id_sel)
+                    if datos_old:
+                        with st.form("form_editar_venta"):
+                            st.caption(f"📝 Editando Venta #{id_sel}: {datos_old['producto']}")
+                            c1, c2 = st.columns(2)
+                            nc = c1.number_input("Cantidad", value=int(datos_old['cantidad']), min_value=1)
+                            np = c2.number_input("Precio Unitario", value=float(datos_old['precio_unitario']), min_value=0.0)
+                            nm = st.selectbox("Pago", ["Efectivo", "Transferencia"], index=0 if datos_old['metodo_pago']=="Efectivo" else 1)
+                            nn = st.text_input("Notas", value=datos_old['notas'] if datos_old['notas'] else "")
+                            
+                            st.info(f"Nuevo Total: ${nc*np:,.0f}")
+                            if st.form_submit_button("💾 Actualizar Venta"):
+                                ok, msg = db.actualizar_venta(id_sel, nc, np, nm, nn)
+                                if ok: st.success(msg); time.sleep(1); st.rerun()
+                                else: st.error(msg)
+                
+                # B) EDICIÓN DE COMPRAS (NUEVO)
                 else:
-                    if db.eliminar_compra(id_sel, row_del): 
-                        st.success("Compra eliminada y stock descontado.")
-                        time.sleep(1); st.rerun()
+                    datos_c = db.obtener_compra_por_id(id_sel)
+                    if datos_c:
+                        with st.form("form_editar_compra"):
+                            st.caption(f"📝 Editando Compra #{id_sel}: {datos_c['producto']}")
+                            
+                            c1, c2 = st.columns(2)
+                            nc = c1.number_input("Cantidad Comprada", value=int(datos_c['cantidad']), min_value=1)
+                            # Nota: En compras solemos guardar el Costo TOTAL, no unitario.
+                            n_costo = c2.number_input("Costo Total ($)", value=float(datos_c['costo_total']), min_value=0.0)
+                            
+                            c3, c4 = st.columns(2)
+                            n_prov = c3.text_input("Proveedor", value=datos_c['proveedor'] if datos_c['proveedor'] else "")
+                            n_met = c4.selectbox("Pago", ["Efectivo", "Transferencia"], index=0 if datos_c['metodo_pago']=="Efectivo" else 1)
+                            
+                            n_notas = st.text_input("Notas / Factura", value=datos_c['notas'] if datos_c['notas'] else "")
+                            
+                            if nc > 0:
+                                st.caption(f"Costo Unitario calculado: ${n_costo / nc:,.2f}")
+
+                            if st.form_submit_button("💾 Actualizar Compra"):
+                                ok, msg = db.actualizar_compra(id_sel, nc, n_costo, n_prov, n_met, n_notas)
+                                if ok: 
+                                    st.success(msg)
+                                    time.sleep(1); st.rerun()
+                                else: 
+                                    st.error(msg)
+
+            # --- PESTAÑA ELIMINAR ---
+            with tab_del:
+                st.write(f"¿Estás seguro de eliminar el registro **ID {id_sel}**?")
+                st.warning("El stock asociado será devuelto al inventario automáticamente.")
+                
+                if st.button("🚨 CONFIRMAR ELIMINACIÓN", type="primary"):
+                    # Obtener la fila completa del dataframe original para pasarla a la funcion eliminar
+                    row_del = df_show[df_show['ID'] == id_sel].iloc[0]
+                    
+                    exito = False
+                    if tipo_mov == "Ventas":
+                        exito = db.eliminar_venta(id_sel, row_del)
+                    else:
+                        exito = db.eliminar_compra(id_sel, row_del)
+                        
+                    if exito:
+                        st.success("Registro eliminado correctamente.")
+                        time.sleep(1.5)
+                        st.rerun()
+                    else:
+                        st.error("Error al eliminar el registro.")
 
 # --- 4. STOCK (RENOVADO) ---
 elif menu == "Stock":

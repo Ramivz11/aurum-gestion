@@ -336,3 +336,65 @@ def actualizar_venta(id_v, nc, np, nm, nn):
         conn.commit(); return True, "Ok"
     except Exception as e: return False, str(e)
     finally: conn.close()
+# --- AGREGAR AL FINAL DE database.py (PARA COMPRAS) ---
+
+def obtener_compra_por_id(id_c):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM compras WHERE id = %s", (id_c,))
+        return cursor.fetchone()
+    finally:
+        if conn.is_connected(): conn.close()
+
+def actualizar_compra(id_compra, nueva_cant, nuevo_costo, nuevo_prov, nuevo_metodo, nuevas_notas):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # 1. Obtener datos viejos
+        cursor.execute("SELECT producto, variante, sucursal_nombre, cantidad, ubicacion FROM compras WHERE id = %s", (id_compra,))
+        row = cursor.fetchone()
+        if not row: return False, "Compra no encontrada"
+        
+        prod, var, _, old_cant, suc = row
+        var = var if var else ""
+        
+        # 2. Calcular diferencia de Stock (Nuevo - Viejo)
+        # Ej: Compré 5, corrijo a 8. Diferencia +3 (Sumar al stock)
+        # Ej: Compré 5, corrijo a 2. Diferencia -3 (Restar al stock)
+        diferencia = nueva_cant - old_cant
+        
+        # 3. Validación de Seguridad
+        # Si la diferencia es negativa (estamos achicando la compra), verificamos que ese stock no se haya vendido ya.
+        if diferencia < 0:
+            cursor.execute("SELECT cantidad FROM inventario WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (prod, var, suc))
+            res = cursor.fetchone()
+            stock_actual = res[0] if res else 0
+            
+            # Si quiero quitar 3 pero solo tengo 1 en stock, error.
+            if stock_actual < abs(diferencia):
+                return False, f"No puedes reducir {abs(diferencia)} u. porque solo quedan {stock_actual} en stock (ya se vendieron)."
+
+        # 4. Actualizar Inventario
+        # Sumamos la diferencia (si es negativa, restará)
+        cursor.execute("""
+            UPDATE inventario SET cantidad = cantidad + %s 
+            WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s
+        """, (diferencia, prod, var, suc))
+        
+        # 5. Actualizar Registro Compra
+        sql_upd = """
+            UPDATE compras 
+            SET cantidad=%s, costo_total=%s, proveedor=%s, metodo_pago=%s, notas=%s
+            WHERE id=%s
+        """
+        cursor.execute(sql_upd, (nueva_cant, nuevo_costo, nuevo_prov, nuevo_metodo, nuevas_notas, id_compra))
+        
+        conn.commit()
+        return True, "Compra corregida exitosamente."
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        cursor.close()
+        conn.close()

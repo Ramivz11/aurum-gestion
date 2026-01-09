@@ -30,6 +30,7 @@ def obtener_datos_matrix():
     conn = get_db_connection()
     try:
         # 1. Productos Base (Solo activos)
+        # IMPORTANTE: Aquí se usa la columna 'activo' que acabamos de crear
         sql_prod = "SELECT nombre, costo, precio FROM productos WHERE activo = 1 ORDER BY nombre"
         df_base = pd.read_sql(sql_prod, conn)
         
@@ -67,6 +68,7 @@ def obtener_datos_matrix():
                 col_name = f"{suc}"
                 df_matrix[col_name] = 0
                 stock_suc = df_stock[df_stock['sucursal_nombre'] == suc]
+                # Crear diccionario para mapeo rápido
                 stock_map = stock_suc.set_index(['producto_nombre', 'variante'])['cantidad'].to_dict()
                 
                 def get_qty(row):
@@ -76,7 +78,8 @@ def obtener_datos_matrix():
 
         return df_matrix, sucursales
     except Exception as e:
-        st.error(f"Error matrix: {e}")
+        # Si falla, devolvemos vacío para no romper la app
+        print(f"Error matrix: {e}")
         return pd.DataFrame(), []
     finally:
         if conn.is_connected(): conn.close()
@@ -91,10 +94,8 @@ def guardar_cambios_masivos(df_nuevo, sucursales):
             nuevo_costo = row['Costo']
             nuevo_precio = row['Precio']
             
-            # Actualizar precios base
             cursor.execute("UPDATE productos SET costo = %s, precio = %s WHERE nombre = %s", (nuevo_costo, nuevo_precio, prod))
             
-            # Actualizar stock por sucursal
             for suc in sucursales:
                 cantidad = int(row[suc])
                 sql_stock = """
@@ -186,11 +187,11 @@ def borrado_logico_producto(nombre_producto):
     finally: conn.close()
 
 # ==========================================
-#      COMPATIBILIDAD (Corregida)
+#      COMPATIBILIDAD (Renombrado de Columnas)
 # ==========================================
 
 def obtener_datos_globales():
-    """Carga datos iniciales y renombra columnas para evitar KeyErrors"""
+    """Esta función es CRÍTICA para evitar el KeyError: 'ID'"""
     conn = get_db_connection()
     try:
         # Sucursales
@@ -198,9 +199,10 @@ def obtener_datos_globales():
         lista_sucursales = df_suc['nombre'].tolist() if not df_suc.empty else []
         
         # Productos Base (Para precios)
+        # Nota: Usamos activo=1, si falla es porque no corriste la migración del PASO 1
         df_prod = pd.read_sql("SELECT nombre as Nombre, costo as Costo, precio as Precio FROM productos WHERE activo=1", conn)
         
-        # Ventas (¡IMPORTANTE! Renombrar columnas)
+        # Ventas (¡RENOMBRAMOS A MAYÚSCULAS!)
         df_ventas = pd.read_sql("SELECT * FROM ventas ORDER BY fecha DESC", conn)
         df_ventas = df_ventas.rename(columns={
             'id': 'ID', 'fecha': 'FECHA', 'producto': 'PRODUCTO', 
@@ -210,7 +212,7 @@ def obtener_datos_globales():
             'variante': 'VARIANTE'
         })
         
-        # Compras (¡IMPORTANTE! Renombrar columnas)
+        # Compras (¡RENOMBRAMOS A MAYÚSCULAS!)
         df_compras = pd.read_sql("SELECT * FROM compras ORDER BY fecha DESC", conn)
         df_compras = df_compras.rename(columns={
             'id': 'ID', 'fecha': 'FECHA', 'producto': 'PRODUCTO', 
@@ -242,7 +244,7 @@ def obtener_catalogo_venta():
     finally: conn.close()
 
 # ==========================================
-#      CLIENTES (Restaurados)
+#      CLIENTES (Recuperado)
 # ==========================================
 
 def obtener_clientes_metricas():
@@ -288,7 +290,7 @@ def eliminar_cliente(id_c):
     finally: conn.close()
 
 # ==========================================
-#      FINANZAS (Restauradas)
+#      FINANZAS (Recuperado)
 # ==========================================
 
 def obtener_resumen_finanzas():
@@ -308,7 +310,7 @@ def actualizar_saldo_inicial(cuenta, monto):
     finally: conn.close()
 
 # ==========================================
-#      TRANSACCIONES (Ventas/Compras)
+#      TRANSACCIONES (Restauradas y Mejoradas)
 # ==========================================
 
 def crear_producto(nombre, costo, precio):
@@ -363,69 +365,41 @@ def eliminar_compra(id_c, datos):
         conn.commit(); return True
     except: return False
     finally: conn.close()
-# --- EDICIÓN DE MOVIMIENTOS (NUEVO) ---
 
+# --- EDICIÓN DE VENTAS (NECESARIO PARA TU BOTÓN DE EDITAR) ---
 def obtener_venta_por_id(id_venta):
     conn = get_db_connection()
     try:
-        # Usamos diccionario para facilitar el manejo
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM ventas WHERE id = %s", (id_venta,))
         return cursor.fetchone()
-    finally:
-        conn.close()
+    finally: conn.close()
 
 def actualizar_venta(id_venta, nueva_cant, nuevo_precio, nuevo_metodo, nuevas_notas):
-    """
-    Actualiza una venta y ajusta el stock automáticamente.
-    Nota: No permite cambiar el producto/variante por seguridad (para eso, mejor borrar y crear).
-    """
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     try:
-        # 1. Obtener datos viejos para revertir stock
         cursor.execute("SELECT producto, variante, sucursal_nombre, cantidad, ubicacion FROM ventas WHERE id = %s", (id_venta,))
         row = cursor.fetchone()
         if not row: return False, "Venta no encontrada"
         
         prod, var, _, old_cant, suc = row
         var = var if var else ""
-        
-        # 2. Calcular diferencia de stock
-        # Si nueva_cant > old_cant, necesito restar MÁS stock.
         diferencia = nueva_cant - old_cant
         
-        # 3. Verificar stock disponible si estamos aumentando la venta
         if diferencia > 0:
             cursor.execute("SELECT cantidad FROM inventario WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (prod, var, suc))
             stock_res = cursor.fetchone()
             stock_actual = stock_res[0] if stock_res else 0
-            if stock_actual < diferencia:
-                return False, f"Sin stock suficiente para agregar {diferencia} u. más."
+            if stock_actual < diferencia: return False, f"Sin stock suficiente."
 
-        # 4. Actualizar Stock
-        # Restamos la diferencia (si diferencia es negativa, esto suma stock, lo cual es correcto)
-        cursor.execute("""
-            UPDATE inventario SET cantidad = cantidad - %s 
-            WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s
-        """, (diferencia, prod, var, suc))
-        
-        # 5. Actualizar Venta
+        cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE producto_nombre=%s AND variante=%s AND sucursal_nombre=%s", (diferencia, prod, var, suc))
         nuevo_total = nueva_cant * nuevo_precio
-        sql_update = """
-            UPDATE ventas 
-            SET cantidad=%s, precio_unitario=%s, total=%s, metodo_pago=%s, notas=%s
-            WHERE id=%s
-        """
+        sql_update = "UPDATE ventas SET cantidad=%s, precio_unitario=%s, total=%s, metodo_pago=%s, notas=%s WHERE id=%s"
         cursor.execute(sql_update, (nueva_cant, nuevo_precio, nuevo_total, nuevo_metodo, nuevas_notas, id_venta))
         
         conn.commit()
-        return True, "Venta actualizada correctamente."
-        
+        return True, "Venta actualizada."
     except Exception as e:
         conn.rollback()
         return False, str(e)
-    finally:
-        conn.close()
-
-# (Opcional) Puedes hacer lo mismo para compras si lo necesitas
+    finally: conn.close()

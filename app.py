@@ -176,52 +176,78 @@ if menu == "Registrar Venta":
                         if "last_prod_v" in st.session_state: del st.session_state.last_prod_v
                         st.rerun()
 
-# --- 2. REGISTRAR COMPRA ---
+# --- 2. REGISTRAR COMPRA (CORREGIDO) ---
 elif menu == "Registrar Compra":
     st.title("📦 Ingreso de Mercadería")
+    
     if not sucursales:
-        st.warning("Carga sucursales primero.")
+        st.warning("⚠️ Carga sucursales en la base de datos primero.")
     else:
-        # CATALOGO COMPRAS: También necesita variantes
-        # Reutilizamos la lógica de catalogo pero para ingreso
-        # (Para simplificar, usamos el DF global df_prod que ya tiene "Nombre | Sabor")
-        lista_prods = sorted(df_prod['Nombre'].unique()) if not df_prod.empty else []
+        # 1. Obtener catálogo completo (Producto + Variantes)
+        # Usamos la misma función que en ventas para ver todos los sabores
+        df_catalogo = db.obtener_catalogo_venta()
         
+        opciones_compra = []
+        mapa_datos = {}
+        
+        if not df_catalogo.empty:
+            for _, row in df_catalogo.iterrows():
+                # Construimos el string "Producto | Sabor"
+                if row['nombre_variante']:
+                    etiqueta = f"{row['nombre']} | {row['nombre_variante']}"
+                    var_real = row['nombre_variante']
+                else:
+                    etiqueta = row['nombre']
+                    var_real = ""
+                
+                opciones_compra.append(etiqueta)
+                
+                # Guardamos la info para recuperarla al seleccionar
+                mapa_datos[etiqueta] = {
+                    "base": row['nombre'],
+                    "variante": var_real
+                }
+        
+        # 2. Formulario de Compra
         c1, c2 = st.columns(2)
-        prod_compra_full = c1.selectbox("Producto / Sabor", lista_prods)
-        suc_compra = c2.selectbox("Destino", sucursales)
+        prod_compra_full = c1.selectbox("Producto / Sabor", opciones_compra, placeholder="Escribe para buscar...")
+        suc_compra = c2.selectbox("Destino (Sucursal)", sucursales)
 
-        # Separar Nombre y Variante
-        if prod_compra_full:
-            if " | " in prod_compra_full:
-                parts = prod_compra_full.split(" | ")
-                prod_real_c = parts[0]
-                var_real_c = parts[1]
-            else:
-                prod_real_c = prod_compra_full
-                var_real_c = ""
+        # Lógica para mostrar costo sugerido (Opcional, busca el último costo)
+        costo_sugerido = 0.0
+        
+        with st.form("form_compra"):
+            st.divider()
+            cc1, cc2 = st.columns(2)
+            cant_c = cc1.number_input("Cantidad a Ingresar", min_value=1, value=1)
+            costo_c = cc2.number_input("Costo Total de la Compra ($)", min_value=0.0, step=100.0)
             
-            # Buscar costo base
-            costo_ini = 0.0
-            row = df_prod[df_prod['Nombre'] == prod_compra_full]
-            if not row.empty: costo_ini = float(row.iloc[0]['Costo'])
+            cc3, cc4 = st.columns(2)
+            prov = cc3.text_input("Proveedor")
+            metodo_c = cc4.selectbox("Método de Pago", ["Efectivo", "Transferencia"])
             
-            with st.form("form_compra"):
-                cc1, cc2 = st.columns(2)
-                cant_c = cc1.number_input("Cantidad", min_value=1, value=1)
-                costo_c = cc2.number_input("Costo Total ($)", min_value=0.0, value=costo_ini)
-                
-                cc3, cc4 = st.columns(2)
-                prov = cc3.text_input("Proveedor")
-                metodo_c = cc4.selectbox("Método Pago", ["Efectivo", "Transferencia"])
-                notas_c = st.text_input("Notas / Factura")
-                
-                if st.form_submit_button("📥 REGISTRAR INGRESO"):
-                    if db.registrar_compra(prod_real_c, var_real_c, cant_c, costo_c, prov, metodo_c, suc_compra, notas_c):
-                        st.success(f"Ingreso registrado en {suc_compra}!")
+            notas_c = st.text_input("Notas / Nro Factura")
+            
+            # Feedback visual del costo unitario
+            if cant_c > 0 and costo_c > 0:
+                st.caption(f"💡 Costo unitario calculado: **${costo_c / cant_c:,.2f}**")
+            
+            if st.form_submit_button("📥 REGISTRAR INGRESO", type="primary"):
+                if prod_compra_full:
+                    # Recuperamos los datos limpios del mapa
+                    datos = mapa_datos[prod_compra_full]
+                    prod_real = datos['base']
+                    var_real = datos['variante']
+                    
+                    # Llamamos a la base de datos pasando la variante explícitamente
+                    if db.registrar_compra(prod_real, var_real, cant_c, costo_c, prov, metodo_c, suc_compra, notas_c):
+                        st.success(f"✅ ¡Ingreso de {prod_compra_full} registrado en {suc_compra}!")
                         time.sleep(1.5)
                         st.rerun()
-
+                    else:
+                        st.error("❌ Error al registrar en base de datos.")
+                else:
+                    st.warning("Selecciona un producto.")
 # --- 3. MOVIMIENTOS ---
 elif menu == "Movimientos":
     st.title("📜 Historial de Transacciones")
